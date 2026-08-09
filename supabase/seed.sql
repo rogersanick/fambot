@@ -1,21 +1,4 @@
--- Local-dev seed. Applied by `supabase db reset`.
-
--- Deep-link base URL used by SQL-side composers (reminder cron).
-insert into public.app_config (key, value)
-values ('app_base_url', 'http://localhost:3000')
-on conflict (key) do update set value = excluded.value, updated_at = now();
-
--- The local-dev bridge. The bridge worker's .env carries the matching
--- plaintext secret (BRIDGE_SECRET=local-dev-bridge-secret).
-insert into public.bridges (id, name, bot_handle, secret_hash, status, worker_version)
-values (
-  '00000000-0000-0000-0000-000000000001',
-  'local-dev',
-  'local-dev',
-  encode(digest('local-dev-bridge-secret', 'sha256'), 'hex'),
-  'active',
-  '0.1.0'
-)
-on conflict (id) do update set
-  secret_hash = excluded.secret_hash,
-  status = excluded.status;
+-- Local-dev seed. Users (owner + agent) are created by scripts/bootstrap-local.mjs
+-- via the auth admin API; households are created in the portal or by the agent
+-- through the setup_household MCP tool. Nothing to seed here.
+select 1;

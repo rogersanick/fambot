@@ -1,50 +1,113 @@
 import { loadConfig } from "./config.js";
-import { Spool } from "./spool.js";
+import { BridgeState } from "./state.js";
 import { ContextBuffer } from "./context-buffer.js";
 import { InvocationMatcher } from "./invocation.js";
 import { ImsgRpc } from "./imsg-rpc.js";
-import { FambotApi } from "./fambot-api.js";
-import { createInboundHandler } from "./inbound.js";
-import { Forwarder } from "./forwarder.js";
-import { OutboxPoller } from "./outbox-poller.js";
-import { Heartbeat } from "./heartbeat.js";
+import { createInboundHandler, type Invocation } from "./inbound.js";
+import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";
+import { runCliAgent } from "./agent/run-cli.js";
+import { runOpenAiAgent } from "./agent/run-openai.js";
+import { connectMcp } from "./agent/mcp-port.js";
+import { AgentSession } from "./supabase-session.js";
+import { ReminderPoller } from "./reminders.js";
+import type { AgentRequest } from "./agent/types.js";
 
 const config = loadConfig();
-const spool = new Spool(config.spoolPath);
+const state = new BridgeState(config.statePath);
 const contextBuffer = new ContextBuffer();
-const matcher = new InvocationMatcher();
-const api = new FambotApi(config.functionsUrl, config.bridgeId, config.bridgeSecret);
+const matcher = new InvocationMatcher(config.botName);
+const session = new AgentSession(
+  config.supabaseUrl,
+  config.supabaseAnonKey,
+  config.agentEmail,
+  config.agentPassword,
+);
 
 const rpc = new ImsgRpc({
   bin: config.imsgBin,
   onMessage: (message) => handleInbound(message),
-  getCursor: () => spool.getWatchCursor(),
-  setCursor: (rowid) => spool.setWatchCursor(rowid),
+  getCursor: () => state.getCursor(),
+  setCursor: (rowid) => state.setCursor(rowid),
 });
 
-const poller = new OutboxPoller(config, api, rpc, spool);
-const forwarder = new Forwarder(spool, api, () => poller.burst());
-const heartbeat = new Heartbeat(config, api, matcher, spool);
+async function sendPrefixed(chatGuid: string, text: string): Promise<void> {
+  const body = config.botMessagePrefix ? `${config.botMessagePrefix}\n${text}` : text;
+  const result = await rpc.send({ chat_guid: chatGuid, text: body });
+  state.recordSent(result.guid);
+}
+
+async function runAgent(request: AgentRequest): Promise<string> {
+  const token = await session.token();
+  if (config.agentMode === "cli") {
+    // Ready-made MCP client config (Claude Code's --mcp-config accepts JSON).
+    const mcpConfig = JSON.stringify({
+      mcpServers: {
+        fambot: {
+          type: "http",
+          url: config.mcpUrl,
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      },
+    });
+    return runCliAgent(request, {
+      command: config.agentCmd,
+      timeoutMs: config.agentTimeoutMs,
+      env: { FAMBOT_MCP_URL: config.mcpUrl, FAMBOT_MCP_TOKEN: token, FAMBOT_MCP_CONFIG: mcpConfig },
+    });
+  }
+  const tools = await connectMcp(config.mcpUrl, token);
+  return runOpenAiAgent(request, {
+    baseUrl: config.openaiBaseUrl,
+    model: config.openaiModel,
+    apiKey: config.openaiApiKey || undefined,
+    timeoutMs: config.agentTimeoutMs,
+    tools,
+  });
+}
+
+// One agent run at a time per chat; runs in different chats may interleave.
+const chatQueues = new Map<string, Promise<void>>();
+
+function handleInvocation(invocation: Invocation): void {
+  const prior = chatQueues.get(invocation.chatGuid) ?? Promise.resolve();
+  const run = prior.then(async () => {
+    const started = Date.now();
+    console.log(`[agent] ${invocation.chatGuid}: "${invocation.text.slice(0, 80)}"`);
+    try {
+      const reply = await runAgent({ system: SYSTEM_PROMPT, user: buildUserPrompt(invocation) });
+      await sendPrefixed(invocation.chatGuid, reply);
+      console.log(`[agent] replied in ${Date.now() - started}ms`);
+    } catch (err) {
+      console.error("[agent] run failed:", err instanceof Error ? err.message : err);
+      await sendPrefixed(invocation.chatGuid, "Sorry, I hit a snag handling that — try again?").catch(() => {});
+    }
+  });
+  chatQueues.set(invocation.chatGuid, run);
+}
 
 const handleInbound = createInboundHandler({
   config,
-  spool,
+  state,
   contextBuffer,
   matcher,
-  rpc,
-  onInvocationSpooled: () => forwarder.kick(),
+  onInvocation: handleInvocation,
 });
 
+const reminders = new ReminderPoller(session, sendPrefixed, config.reminderPollMs);
 const sweepTimer = setInterval(() => contextBuffer.sweep(), 60_000);
 
 async function main(): Promise<void> {
   console.log(`FamBot bridge (${config.profile}) starting`);
   console.log(`  imsg binary: ${config.imsgBin}`);
-  console.log(`  Edge functions: ${config.functionsUrl}`);
+  console.log(`  MCP server: ${config.mcpUrl}`);
+  console.log(`  Agent mode: ${config.agentMode}${config.agentMode === "openai" ? ` (${config.openaiBaseUrl}, model ${config.openaiModel})` : ` (${config.agentCmd})`}`);
   if (config.profile === "local-dev") {
     console.log(`  Chat allowlist: ${config.chatAllowlist.size} chat(s)`);
     console.log(`  Bot prefix: ${config.botMessagePrefix}`);
   }
+
+  await session.start();
+  console.log(`  Signed in to Supabase as ${config.agentEmail}`);
 
   await rpc.start();
 
@@ -59,18 +122,15 @@ async function main(): Promise<void> {
     );
   }
 
-  forwarder.start();
-  poller.start();
-  heartbeat.start();
+  reminders.start();
   console.log("FamBot bridge is watching for messages.");
 }
 
 function shutdown(): void {
   console.log("\nShutting down…");
-  forwarder.stop();
-  poller.stop();
-  heartbeat.stop();
+  reminders.stop();
   clearInterval(sweepTimer);
+  session.stop();
   rpc.stop();
   setTimeout(() => process.exit(0), 500).unref();
   process.exitCode = 0;

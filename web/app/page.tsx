@@ -1,46 +1,65 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 export default async function RootPage() {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
   if (!user) redirect("/login");
 
-  const { data: households } = await supabase
-    .from("households")
-    .select("slug, display_name")
-    .order("display_name");
+  const { data: households } = await supabase.from("households").select("id, name").order("name");
+
+  if (households && households.length === 1) redirect(`/h/${households[0].id}`);
+
+  async function createHousehold(formData: FormData) {
+    "use server";
+    const name = String(formData.get("name") ?? "").trim();
+    const timezone = String(formData.get("timezone") ?? "America/New_York").trim();
+    if (!name) redirect("/");
+    const db = await createClient();
+    const { data, error } = await db.rpc("setup_household", {
+      p_name: name,
+      p_timezone: timezone || "America/New_York",
+      p_role: "owner",
+    });
+    if (error || !data) redirect("/");
+    redirect(`/h/${data}`);
+  }
 
   if (!households || households.length === 0) {
     return (
       <main className="flex min-h-svh items-center justify-center p-6">
         <Card className="w-full max-w-sm">
           <CardHeader>
-            <CardTitle>No household linked yet</CardTitle>
+            <CardTitle>Create your household</CardTitle>
             <CardDescription>
-              Text <span className="font-mono">@fambot link</span> in your group chat, then enter
-              the code here.
+              One shared space for todos, calendar, and reminders. You can also let the agent set
+              this up from the group chat.
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button asChild className="w-full">
-              <Link href="/link">Enter a link code</Link>
-            </Button>
+            <form action={createHousehold} className="grid gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="name">Household name</Label>
+                <Input id="name" name="name" placeholder="Rogers Family" required />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="timezone">Timezone</Label>
+                <Input id="timezone" name="timezone" defaultValue="America/New_York" />
+              </div>
+              <Button type="submit">Create household</Button>
+            </form>
           </CardContent>
         </Card>
       </main>
     );
   }
 
-  if (households.length === 1) redirect(`/h/${households[0].slug}`);
-
-  // Household switcher for users linked to multiple households.
   return (
     <main className="flex min-h-svh items-center justify-center p-6">
       <Card className="w-full max-w-sm">
@@ -50,8 +69,8 @@ export default async function RootPage() {
         </CardHeader>
         <CardContent className="grid gap-2">
           {households.map((h) => (
-            <Button key={h.slug} asChild variant="outline" className="justify-start">
-              <Link href={`/h/${h.slug}`}>{h.display_name ?? h.slug}</Link>
+            <Button key={h.id} asChild variant="outline" className="justify-start">
+              <a href={`/h/${h.id}`}>{h.name}</a>
             </Button>
           ))}
         </CardContent>

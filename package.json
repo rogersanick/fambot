@@ -2,17 +2,21 @@
   "name": "fambot",
   "private": true,
   "version": "0.1.0",
-  "description": "FamBot — a multitenant iMessage family assistant: Mac bridge + supervised imsg rpc transport, Supabase backend, structured-output AI agent, Next.js/shadcn portal.",
+  "description": "FamBot — household todos, calendar, and reminders as a Supabase/Next.js app with an MCP tool surface, an imsg bridge on your Mac, and a pluggable agent (osaurus, Claude Code, anything).",
   "scripts": {
     "bridge:dev": "npm --prefix bridge run dev",
     "web:dev": "npm --prefix web run dev",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
-    "functions:serve": "supabase functions serve --env-file supabase/functions/.env",
-    "types:gen": "npx supabase gen types typescript --local > packages/shared/database.types.ts && cp packages/shared/database.types.ts web/lib/database.types.ts && cp packages/shared/database.types.ts supabase/functions/_shared/database.types.ts"
+    "bootstrap": "node scripts/bootstrap-local.mjs",
+    "smoke:mcp": "node scripts/mcp-smoke.mjs",
+    "test": "npm --prefix bridge test",
+    "types:gen": "npx supabase gen types typescript --local > web/lib/database.types.ts"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@supabase/supabase-js": "^2.112.2",
     "supabase": "^2.111.0"
   }
 }

@@ -1,99 +1,62 @@
 # FamBot
 
-FamBot is a text-only AI assistant that lives inside ordinary iMessage group chats. Members tag `@fambot` in natural language to create, update, complete, list, and schedule shared tasks and events. Every FamBot reply ends with a deep link into a web portal showing the live artifact.
+FamBot is your household's shared brain — todos, calendar, and reminders — that the whole family talks to by tagging `@fambot` in your ordinary iMessage group chat.
 
-**V1 scope: everything runs on one local Mac** — local Supabase, local Next.js portal, and [imsg](https://imsg.sh) on your own iMessage identity with a `Fambot says: 🤖✨` prefix.
+The design is **maximally extensible, minimally scoped**:
+
+- **The app** is a Supabase-powered Next.js portal. It exposes everything it can do as **MCP tools** at `/mcp`. That's the whole product.
+- **The bridge** is the simplest possible always-on process on your Mac. It piggybacks on your existing iMessage identity via [imsg](https://imsg.sh), and when someone tags `@fambot` it invokes *your* agent, then texts the agent's reply back. It also delivers due reminders.
+- **The agent is pluggable.** Anything that can call MCP tools works: [osaurus](https://osaurus.ai) with local/Apple models, Claude Code when you want big-model power, or any OpenAI-compatible endpoint. Swap agents by editing one env var — the app never contains an LLM pipeline.
+
+```
+iMessage ──▶ bridge (Mac, always on) ──▶ your agent ──▶ MCP tools ──▶ Supabase
+   ▲              │                          │                          ▲
+   └── reply ─────┘                          └──────── RLS-scoped ──────┘
+```
+
+Auth is boring on purpose: the agent is a real Supabase user and a household *member* with role `agent`. Its MCP calls carry its JWT, and Postgres row-level security is the only authorization layer.
 
 ## Repo structure
 
 ```
 fambot/
-  bridge/    # Mac bridge worker: Node 24, TS, supervised imsg rpc child, better-sqlite3, Zod
-  supabase/  # migrations/, functions/ (Deno edge functions), seed.sql, config.toml
-  web/       # Next.js portal: App Router, TS, Tailwind, shadcn/ui, @supabase/ssr
-  docs/      # design docs and per-task implementation plans (docs/plans/)
+  web/       # Next.js portal (todos/calendar/reminders UI) + MCP server at /mcp
+  bridge/    # Mac bridge: supervised `imsg rpc` child, agent adapters, reminder poller
+  supabase/  # one migration (6 tables + RLS + 2 RPCs), config for local stack
+  scripts/   # bootstrap-local, mcp-smoke, fake-imsg + fake-agent (test without Messages)
+  docs/      # INSTALL.md (start here), design spec
 ```
 
-## Prerequisites
+## Quickstart
 
-- macOS with Messages signed in (your own identity in local-dev)
-- [imsg](https://imsg.sh) — `brew install steipete/tap/imsg` (or the notarized binary from [GitHub releases](https://github.com/steipete/imsg/releases))
-- Node.js 24+, Docker (for local Supabase), [Supabase CLI](https://supabase.com/docs/guides/cli)
-- An LLM API key (any OpenAI-compatible structured-output endpoint)
-
-## One-time macOS permissions
-
-imsg reads `~/Library/Messages/chat.db` and sends through Messages.app's AppleScript surface. Two grants, once each:
-
-1. **Full Disk Access** for the terminal app that runs the bridge (System Settings → Privacy & Security → Full Disk Access). Verify with `imsg chats --limit 3`.
-2. **Automation**: the first send pops "…wants to control Messages" — click Allow.
-
-## Quickstart (local-dev)
-
-1. **Start Supabase** (Postgres, auth, edge runtime):
-
-   ```sh
-   supabase start
-   supabase db reset          # applies migrations + seed.sql
-   ```
-
-2. **Serve edge functions** (separate terminal):
-
-   ```sh
-   cp supabase/functions/.env.example supabase/functions/.env   # fill in LLM key
-   npm run functions:serve
-   ```
-
-3. **Start the portal** (separate terminal):
-
-   ```sh
-   cd web
-   cp .env.example .env.local   # local Supabase URL + anon key from `supabase status`
-   npm install && npm run dev   # http://localhost:3000
-   ```
-
-4. **Start the bridge** (separate terminal):
-
-   ```sh
-   cd bridge
-   cp .env.example .env         # fill in chat allowlist
-   npm install && npm run dev
-   ```
-
-   The bridge spawns and supervises one `imsg rpc` child — no daemon, no ports, no webhook. To find your group chat's GUID for `CHAT_ALLOWLIST`:
-
-   ```sh
-   imsg chats --limit 20 --json | jq -r '[.guid, .name] | @tsv'
-   ```
-
-5. **Round trip**: in the allowlisted group chat, send `@fambot hello`. FamBot replies with the onboarding message. Then `@fambot setup Rogers Family`, give it a timezone, and start adding tasks. Every reply's last line is a `http://localhost:3000/...` deep link into the portal.
-
-## Tests
-
-Bridge unit tests (JSON-RPC framing, supervision/restart, inbound filtering) use in-process fakes — no Messages access needed:
+Full walkthrough with permissions and agent setup: **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ```sh
-cd bridge && npm test
+npm install                     # root tooling (supabase CLI)
+npm run db:start                # local Supabase (Docker)
+npm run db:reset                # apply migration
+npm run bootstrap               # create owner + agent users
+
+cd web && npm install && cp .env.example .env.local   # fill anon key
+npm run dev                     # portal + MCP at http://localhost:3000
+
+cd ../bridge && npm install && cp .env.example .env   # fill allowlist + agent
+npm run dev                     # the always-on bridge
 ```
 
-## Deployment profiles
-
-| | `local-dev` (v1) | `production` (deferred) |
-|---|---|---|
-| Mac identity | your personal iMessage account | dedicated FamBot Apple Account |
-| Supabase | `supabase start` (local) | hosted project |
-| Portal | `next dev` at `localhost:3000` | Vercel + custom domain |
-| Message prefix | `Fambot says: 🤖✨` | none |
-| Self-message rule | prefix + sent-ledger matching | plain `is_from_me` drop |
-| Chat filter | explicit allowlist | all activated channels |
-| Process mgmt | foreground `npm run dev` | LaunchAgent |
-
-## Key commands
+Verify without touching iMessage at all:
 
 ```sh
-npm run db:reset          # re-apply migrations + seed
-npm run types:gen         # regenerate packages/shared/database.types.ts
-npm run bridge:dev        # bridge worker in foreground
-npm run web:dev           # portal
-npm run functions:serve   # edge functions with env file
+npm run smoke:mcp               # agent-perspective MCP round trip
+npm test                        # bridge unit tests (fakes only)
 ```
+
+## The MCP surface
+
+15 tools: `get_context`, `setup_household`, `add_member`, `list_members`, `map_channel`, `create_task`, `list_tasks`, `update_task`, `create_event`, `list_events`, `update_event`, `delete_event`, `create_reminder`, `list_reminders`, `cancel_reminder`.
+
+Any MCP client can use them — point it at `http://localhost:3000/mcp` with an `Authorization: Bearer <supabase-jwt>` header. This is also how you'd plug in a *different* messaging channel later: the channel just needs to get an agent invoked with tools.
+
+## Schema
+
+Six tables: `households`, `members`, `channels` (iMessage chat ↔ household), `tasks`, `events`, `reminders`. RLS everywhere; household bootstrap and email-based member linking go through two security-definer RPCs (`setup_household`, `add_member_with_email`).
