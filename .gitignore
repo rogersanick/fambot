@@ -1,0 +1,25 @@
+# deps
+node_modules/
+
+# env
+.env
+.env.local
+.env*.local
+
+# build output
+dist/
+.next/
+out/
+
+# bridge runtime data
+bridge/data/
+*.sqlite
+*.sqlite-journal
+
+# supabase local state
+supabase/.branches/
+supabase/.temp/
+
+# misc
+.DS_Store
+*.log
