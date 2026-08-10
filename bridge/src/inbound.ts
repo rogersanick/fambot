@@ -20,6 +20,38 @@ export interface Invocation {
 }
 
 /**
+ * Lets a conversation continue without re-tagging the bot: after the bot
+ * replies to someone in a chat, that person's next message there (within the
+ * TTL) is treated as directed at the bot. One follow-up per bot reply — each
+ * reply re-opens the window — so multi-turn flows like household onboarding
+ * ("what should I call your household?" → "The Rogers") read naturally while
+ * the bot stays out of unrelated group chatter.
+ */
+export class FollowUpWindow {
+  private windows = new Map<string, { handle: string; expiresAt: number }>();
+
+  constructor(private ttlMs = 3 * 60_000) {}
+
+  /** Called after the bot replies to `senderHandle` in `chatGuid`. */
+  open(chatGuid: string, senderHandle: string, now = Date.now()): void {
+    this.windows.set(chatGuid, { handle: senderHandle, expiresAt: now + this.ttlMs });
+  }
+
+  /** True (and closes the window) if this message continues the conversation. */
+  consume(chatGuid: string, senderHandle: string, now = Date.now()): boolean {
+    const window = this.windows.get(chatGuid);
+    if (!window) return false;
+    if (now > window.expiresAt) {
+      this.windows.delete(chatGuid);
+      return false;
+    }
+    if (window.handle !== senderHandle) return false;
+    this.windows.delete(chatGuid);
+    return true;
+  }
+}
+
+/**
  * Inbound message pipeline. Consumes `imsg rpc` watch notifications, applies
  * the per-profile filters, maintains the in-memory context buffer, and hands
  * invocations (tagged messages) to the agent runner.
@@ -29,9 +61,10 @@ export function createInboundHandler(deps: {
   state: BridgeState;
   contextBuffer: ContextBuffer;
   matcher: InvocationMatcher;
+  followUps: FollowUpWindow;
   onInvocation: (invocation: Invocation) => void;
 }): (message: ImsgMessage) => void {
-  const { config, state, contextBuffer, matcher, onInvocation } = deps;
+  const { config, state, contextBuffer, matcher, followUps, onInvocation } = deps;
 
   return function handleMessage(msg: ImsgMessage): void {
     const chatGuid = msg.chat_guid;
@@ -39,9 +72,6 @@ export function createInboundHandler(deps: {
     const text = msg.text?.trim();
     // Attachment-only, reaction, and poll rows have no usable text — dropped.
     if (!chatGuid || !messageGuid || !text) return;
-
-    // Local-dev: hard allowlist — everything else is ignored entirely, never buffered.
-    if (config.profile === "local-dev" && !config.chatAllowlist.has(chatGuid)) return;
 
     // Self-message handling. Our own sends echo back through the watch stream.
     if (msg.is_from_me) {
@@ -55,7 +85,9 @@ export function createInboundHandler(deps: {
     const sentAt = msg.created_at ?? new Date().toISOString();
     const senderHandle = msg.is_from_me ? "__me__" : normalizeHandle(msg.sender);
     const senderName = msg.sender_name?.trim() ? msg.sender_name : null;
-    const invoked = matcher.matches(text);
+    // A mention anywhere invokes the bot; otherwise an open follow-up window
+    // (bot just replied to this sender in this chat) continues the conversation.
+    const invoked = matcher.matches(text) || followUps.consume(chatGuid, senderHandle);
 
     contextBuffer.add(chatGuid, {
       messageGuid,

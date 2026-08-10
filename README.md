@@ -40,7 +40,7 @@ npm run bootstrap               # create owner + agent users
 cd web && npm install && cp .env.example .env.local   # fill anon key
 npm run dev                     # portal + MCP at http://localhost:3000
 
-cd ../bridge && npm install && cp .env.example .env   # fill allowlist + agent
+cd ../bridge && npm install && cp .env.example .env   # fill anon key + agent
 npm run dev                     # the always-on bridge
 ```
 

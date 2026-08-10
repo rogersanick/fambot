@@ -3,7 +3,7 @@ import { BridgeState } from "./state.js";
 import { ContextBuffer } from "./context-buffer.js";
 import { InvocationMatcher } from "./invocation.js";
 import { ImsgRpc } from "./imsg-rpc.js";
-import { createInboundHandler, type Invocation } from "./inbound.js";
+import { createInboundHandler, FollowUpWindow, type Invocation } from "./inbound.js";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";
 import { runCliAgent } from "./agent/run-cli.js";
 import { runOpenAiAgent } from "./agent/run-openai.js";
@@ -16,6 +16,7 @@ const config = loadConfig();
 const state = new BridgeState(config.statePath);
 const contextBuffer = new ContextBuffer();
 const matcher = new InvocationMatcher(config.botName);
+const followUps = new FollowUpWindow();
 const session = new AgentSession(
   config.supabaseUrl,
   config.supabaseAnonKey,
@@ -76,6 +77,8 @@ function handleInvocation(invocation: Invocation): void {
     try {
       const reply = await runAgent({ system: SYSTEM_PROMPT, user: buildUserPrompt(invocation) });
       await sendPrefixed(invocation.chatGuid, reply);
+      // Let the sender answer a follow-up question without re-tagging the bot.
+      followUps.open(invocation.chatGuid, invocation.senderHandle);
       console.log(`[agent] replied in ${Date.now() - started}ms`);
     } catch (err) {
       console.error("[agent] run failed:", err instanceof Error ? err.message : err);
@@ -90,6 +93,7 @@ const handleInbound = createInboundHandler({
   state,
   contextBuffer,
   matcher,
+  followUps,
   onInvocation: handleInvocation,
 });
 
@@ -102,7 +106,6 @@ async function main(): Promise<void> {
   console.log(`  MCP server: ${config.mcpUrl}`);
   console.log(`  Agent mode: ${config.agentMode}${config.agentMode === "openai" ? ` (${config.openaiBaseUrl}, model ${config.openaiModel})` : ` (${config.agentCmd})`}`);
   if (config.profile === "local-dev") {
-    console.log(`  Chat allowlist: ${config.chatAllowlist.size} chat(s)`);
     console.log(`  Bot prefix: ${config.botMessagePrefix}`);
   }
 

@@ -6,7 +6,6 @@ import { fileURLToPath } from "node:url";
 const envSchema = z.object({
   FAMBOT_PROFILE: z.enum(["local-dev", "production"]).default("local-dev"),
   IMSG_BIN: z.string().min(1).default("imsg"),
-  CHAT_ALLOWLIST: z.string().default(""),
   BOT_NAME: z.string().min(1).default("fambot"),
   BOT_MESSAGE_PREFIX: z.string().default("Fambot says: 🤖✨"),
   STATE_PATH: z.string().default("./data/state.json"),
@@ -52,8 +51,6 @@ function loadDotEnv(): void {
 export interface BridgeConfig {
   profile: "local-dev" | "production";
   imsgBin: string;
-  /** local-dev: only these chat GUIDs are ever processed. */
-  chatAllowlist: Set<string>;
   botName: string;
   botMessagePrefix: string;
   statePath: string;
@@ -75,12 +72,6 @@ export function loadConfig(): BridgeConfig {
   loadDotEnv();
   const env = envSchema.parse(process.env);
 
-  const allowlist = new Set(env.CHAT_ALLOWLIST.split(",").map((s) => s.trim()).filter(Boolean));
-  if (env.FAMBOT_PROFILE === "local-dev" && allowlist.size === 0) {
-    console.warn(
-      "[config] CHAT_ALLOWLIST is empty — in local-dev the bridge processes nothing until you allowlist a chat GUID.",
-    );
-  }
   if (env.AGENT_MODE === "cli" && !env.AGENT_CMD) {
     throw new Error("AGENT_MODE=cli requires AGENT_CMD (e.g. `claude -p --dangerously-skip-permissions`)");
   }
@@ -91,7 +82,6 @@ export function loadConfig(): BridgeConfig {
   return {
     profile: env.FAMBOT_PROFILE,
     imsgBin: env.IMSG_BIN,
-    chatAllowlist: allowlist,
     botName: env.BOT_NAME.toLowerCase(),
     botMessagePrefix: env.BOT_MESSAGE_PREFIX,
     statePath: env.STATE_PATH,

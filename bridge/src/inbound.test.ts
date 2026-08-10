@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { BridgeState } from "./state.js";
 import { ContextBuffer } from "./context-buffer.js";
 import { InvocationMatcher } from "./invocation.js";
-import { createInboundHandler, type Invocation } from "./inbound.js";
+import { createInboundHandler, FollowUpWindow, type Invocation } from "./inbound.js";
 import type { BridgeConfig } from "./config.js";
 import type { ImsgMessage } from "./imsg-rpc.js";
 
@@ -16,7 +16,6 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
   return {
     profile: "local-dev",
     imsgBin: "imsg",
-    chatAllowlist: new Set([CHAT]),
     botName: "fambot",
     botMessagePrefix: "Fambot says: 🤖✨",
     statePath: join(mkdtempSync(join(tmpdir(), "fambot-test-")), "state.json"),
@@ -39,15 +38,17 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 function setup(overrides: Partial<BridgeConfig> = {}) {
   const config = makeConfig(overrides);
   const state = new BridgeState(config.statePath);
+  const followUps = new FollowUpWindow();
   const invocations: Invocation[] = [];
   const handler = createInboundHandler({
     config,
     state,
     contextBuffer: new ContextBuffer(),
     matcher: new InvocationMatcher(config.botName),
+    followUps,
     onInvocation: (inv) => invocations.push(inv),
   });
-  return { config, state, handler, invocations };
+  return { config, state, handler, followUps, invocations };
 }
 
 function msg(overrides: Partial<ImsgMessage>): ImsgMessage {
@@ -64,10 +65,11 @@ function msg(overrides: Partial<ImsgMessage>): ImsgMessage {
   };
 }
 
-test("non-allowlisted chats are ignored entirely", () => {
+test("a mention invokes from any chat — no allowlist", () => {
   const { handler, invocations } = setup();
-  handler(msg({ chat_guid: "iMessage;+;other", text: "@fambot add milk" }));
-  assert.equal(invocations.length, 0);
+  handler(msg({ chat_guid: "iMessage;+;never-seen-before", text: "@fambot help us get set up" }));
+  handler(msg({ chat_guid: "iMessage;-;+15550001111", text: "@fambot hi" }));
+  assert.equal(invocations.length, 2);
 });
 
 test("messages without text are dropped", () => {
@@ -118,7 +120,7 @@ test("developer typing from own identity still invokes in local-dev", () => {
 });
 
 test("production drops all is_from_me messages", () => {
-  const { handler, invocations } = setup({ profile: "production", chatAllowlist: new Set() });
+  const { handler, invocations } = setup({ profile: "production" });
   handler(msg({ is_from_me: true, text: "@fambot hi" }));
   assert.equal(invocations.length, 0);
   handler(msg({ is_from_me: false, text: "@fambot hi" }));
@@ -130,6 +132,32 @@ test("custom bot name matches alongside fambot", () => {
   handler(msg({ text: "hey @jarvis what's up" }));
   handler(msg({ text: "hey @fambot what's up" }));
   assert.equal(invocations.length, 2);
+});
+
+test("an open follow-up window lets the same sender continue without a mention", () => {
+  const { handler, followUps, invocations } = setup();
+  handler(msg({ text: "the rogers household please", sender: "+15551234567" }));
+  assert.equal(invocations.length, 0); // no window yet, no mention
+
+  followUps.open(CHAT, "+15551234567"); // bot replied to this sender
+  handler(msg({ text: "The Rogers", sender: "+15551234567" }));
+  assert.equal(invocations.length, 1);
+  assert.equal(invocations[0]!.text, "The Rogers");
+
+  // One follow-up per bot reply: the window is consumed.
+  handler(msg({ text: "also add grandma", sender: "+15551234567" }));
+  assert.equal(invocations.length, 1);
+});
+
+test("follow-up window ignores other senders and expires", () => {
+  const followUps = new FollowUpWindow(1_000);
+  const now = Date.now();
+  followUps.open(CHAT, "+15551234567", now);
+
+  assert.equal(followUps.consume(CHAT, "+15559990000", now), false); // other sender
+  assert.equal(followUps.consume(CHAT, "+15551234567", now + 2_000), false); // expired
+  followUps.open(CHAT, "+15551234567", now);
+  assert.equal(followUps.consume(CHAT, "+15551234567", now + 500), true); // in time
 });
 
 test("watch cursor persists across state reloads", () => {

@@ -54,19 +54,9 @@ Fill `NEXT_PUBLIC_SUPABASE_ANON_KEY` in `.env.local` — get it from `npx supaba
 npm run dev          # http://localhost:3000
 ```
 
-Set up your household (two minutes, in the browser):
+**Household setup happens in the chat.** Once the bridge is running (step 5), text `@fambot` in your family chat — a mention in a chat FamBot doesn't know yet starts onboarding. It asks what to call the household and who's in it, then sets everything up itself (`setup_household` / `add_member` / `map_channel`). You can answer its questions without tagging it again — after each FamBot reply, your next message in that chat counts as the answer.
 
-1. Go to `http://localhost:3000/login`, sign in as `owner@fambot.local`.
-2. Create your household (name + timezone).
-3. **Settings tab → Members**: add each family member with their iMessage handle (phone in E.164 form like `+15551234567`, or the email they text from).
-4. **Settings tab → Members**: add "FamBot" with account email `agent@fambot.local` — this is what lets the agent see your household.
-5. **Settings tab → iMessage channels**: map your group chat. Find its GUID (imsg emits one JSON object per line — NDJSON, not an array):
-
-   ```sh
-   imsg chats --limit 20 --json | jq -r '[.guid, .name] | @tsv'
-   ```
-
-(Alternatively, skip 2–5 and just text `@fambot set us up` once the bridge is running — the agent can do household setup itself through the `setup_household` / `add_member` / `map_channel` tools. The portal route is more predictable with small local models.)
+The portal is where you *manage* things afterwards: sign in at `http://localhost:3000/login` as `owner@fambot.local` to see the household's todos, calendar, and reminders. (You can also do the whole setup from the portal instead — create the household, add members with their iMessage handles, add "FamBot" with account email `agent@fambot.local`, and map the chat GUID under Settings. That route is more predictable with very small local models.)
 
 ## 4. The agent
 
@@ -110,8 +100,9 @@ cp .env.example .env    # if you haven't already
 Fill in `.env`:
 
 - `SUPABASE_ANON_KEY` — same anon key as the portal
-- `CHAT_ALLOWLIST` — your group chat GUID(s), comma-separated (from `imsg chats` above)
 - agent settings from step 4
+
+There's no chat allowlist: mentioning `@fambot` in **any** chat invokes the bot, and a mention in an unlinked chat starts household onboarding. Untagged messages never leave your Mac.
 
 Then:
 
@@ -148,7 +139,6 @@ Full pipeline dry-run with a fake imsg and a deterministic fake agent (no LLM ne
 ```sh
 cd bridge
 env IMSG_BIN="$PWD/../scripts/fake-imsg.mjs" \
-    CHAT_ALLOWLIST='iMessage;+;chat-smoke-test' \
     AGENT_MODE=cli AGENT_CMD="node $PWD/../scripts/fake-agent.mjs" \
     STATE_PATH=/tmp/fambot-fake-state.json \
     npm run dev
@@ -172,7 +162,7 @@ The agent seam is `AGENT_MODE` in `bridge/.env`:
 | `imsg not found` when the bridge starts | Set `IMSG_BIN` in `bridge/.env` to the absolute path (`which imsg`) |
 | First reply never sends | Approve the "control Messages" Automation prompt (it may be hiding behind other windows) |
 | `agent sign-in failed` at bridge startup | Supabase running? `npm run bootstrap` run? Password matches `.env`? |
-| Agent replies "no household for this chat" | The chat GUID isn't mapped — portal Settings → iMessage channels, and check `CHAT_ALLOWLIST` matches exactly |
+| FamBot starts asking setup questions in an already-set-up chat | That chat's GUID isn't linked to the household — map it in portal Settings → iMessage channels (or let onboarding finish) |
 | MCP 401s | The agent user exists but the token is stale — the bridge auto-refreshes; for manual clients re-mint via sign-in |
 | osaurus never calls tools | Use an instruct model with tool support (Qwen/Llama instruct builds); tiny base models often can't |
 | Reminders arrive late | The Mac was asleep — they deliver on the next poll after wake |
