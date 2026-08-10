@@ -7,11 +7,14 @@ This gets you: the portal + MCP server at `http://localhost:3000`, local Supabas
 - macOS on Apple Silicon, signed into Messages with your Apple ID
 - [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) (for local Supabase) — must be running
 - Node.js 24+ (`node --version`)
-- [imsg](https://imsg.sh):
+- [imsg](https://imsg.sh) (v0.13+), via Homebrew or the installer from imsg.sh:
 
   ```sh
-  brew install steipete/tap/imsg
+  brew install steipete/tap/imsg   # or the notarized installer from imsg.sh
+  imsg --version                   # verify it's on your PATH
   ```
+
+  If your install landed somewhere not on the bridge's PATH (e.g. `~/.local/bin/imsg`), set `IMSG_BIN` in `bridge/.env` to the absolute path.
 
 - An agent (pick one, or both — switching later is one env var):
   - **osaurus** (local models, free, private): `brew install --cask osaurus`
@@ -21,7 +24,7 @@ This gets you: the portal + MCP server at `http://localhost:3000`, local Supabas
 
 imsg reads `~/Library/Messages/chat.db` and sends through Messages.app:
 
-1. **Full Disk Access** for the terminal app that will run the bridge (System Settings → Privacy & Security → Full Disk Access → add Terminal/iTerm/etc). Verify: `imsg chats --limit 3` prints your recent chats.
+1. **Full Disk Access** for the terminal app that will run the bridge (System Settings → Privacy & Security → Full Disk Access → add Terminal/iTerm/etc). If you run the bridge from an IDE's embedded terminal, the IDE itself needs the grant too — macOS checks the whole parent process tree. Restart the app after granting, then verify: `imsg chats --limit 3` prints your recent chats. (Without the grant, everything fails with `authorization denied (code: 23)` — the bridge prints exactly this hint at startup.)
 2. **Automation**: the first time the bridge sends a message, macOS pops "…wants to control Messages" — click Allow.
 
 ## 2. Database + users
@@ -57,10 +60,10 @@ Set up your household (two minutes, in the browser):
 2. Create your household (name + timezone).
 3. **Settings tab → Members**: add each family member with their iMessage handle (phone in E.164 form like `+15551234567`, or the email they text from).
 4. **Settings tab → Members**: add "FamBot" with account email `agent@fambot.local` — this is what lets the agent see your household.
-5. **Settings tab → iMessage channels**: map your group chat. Find its GUID with:
+5. **Settings tab → iMessage channels**: map your group chat. Find its GUID (imsg emits one JSON object per line — NDJSON, not an array):
 
    ```sh
-   imsg chats --limit 20 --json | jq -r '.[] | [.guid, .name] | @tsv'
+   imsg chats --limit 20 --json | jq -r '[.guid, .name] | @tsv'
    ```
 
 (Alternatively, skip 2–5 and just text `@fambot set us up` once the bridge is running — the agent can do household setup itself through the `setup_household` / `add_member` / `map_channel` tools. The portal route is more predictable with small local models.)
@@ -165,7 +168,8 @@ The agent seam is `AGENT_MODE` in `bridge/.env`:
 
 | Symptom | Fix |
 |---|---|
-| `imsg chats` prints nothing / permission error | Full Disk Access for your terminal app, then restart the terminal |
+| `authorization denied (code: 23)` anywhere | Full Disk Access for your terminal app (and its parent launcher, e.g. your IDE), then restart that app |
+| `imsg not found` when the bridge starts | Set `IMSG_BIN` in `bridge/.env` to the absolute path (`which imsg`) |
 | First reply never sends | Approve the "control Messages" Automation prompt (it may be hiding behind other windows) |
 | `agent sign-in failed` at bridge startup | Supabase running? `npm run bootstrap` run? Password matches `.env`? |
 | Agent replies "no household for this chat" | The chat GUID isn't mapped — portal Settings → iMessage channels, and check `CHAT_ALLOWLIST` matches exactly |

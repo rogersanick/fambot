@@ -140,6 +140,16 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 main().catch((err) => {
-  console.error("[startup] fatal:", err instanceof Error ? err.message : err);
+  const message = err instanceof Error ? err.message : String(err);
+  console.error("[startup] fatal:", message);
+  if (message.includes("authorization denied")) {
+    console.error(
+      "\nimsg can't read ~/Library/Messages/chat.db from this process tree.\n" +
+        "Grant Full Disk Access (System Settings → Privacy & Security → Full Disk Access)\n" +
+        "to the terminal app you're running the bridge from — and to its parent launcher\n" +
+        "(e.g. the IDE) if this is an embedded terminal — then restart that app and retry.\n" +
+        "Verify with: imsg chats --limit 3",
+    );
+  }
   process.exit(1);
 });

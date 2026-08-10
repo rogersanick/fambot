@@ -37,7 +37,7 @@ interface JsonRpcFrame {
   method?: string;
   params?: unknown;
   result?: unknown;
-  error?: { code?: number; message?: string };
+  error?: { code?: number; message?: string; data?: unknown };
 }
 
 interface PendingRequest {
@@ -213,7 +213,12 @@ export class ImsgRpc {
       this.pending.delete(String(frame.id));
       clearTimeout(pending.timer);
       if (frame.error) {
-        pending.reject(new Error(`imsg rpc error: ${frame.error.message ?? "unknown"} (${frame.error.code ?? "?"})`));
+        // imsg puts the actionable text (e.g. Full Disk Access instructions)
+        // in error.data — surface it instead of just "Internal error".
+        const data = typeof frame.error.data === "string" ? ` — ${frame.error.data.split("\n")[0]}` : "";
+        pending.reject(
+          new Error(`imsg rpc error: ${frame.error.message ?? "unknown"} (${frame.error.code ?? "?"})${data}`),
+        );
       } else {
         pending.resolve(frame.result);
       }
@@ -231,6 +236,23 @@ export class ImsgRpc {
       } catch (err) {
         console.error("[imsg] onMessage handler failed:", err instanceof Error ? err.message : err);
       }
+      return;
+    }
+
+    if (frame.method === "watch.overflow") {
+      // Terminal notification: the subscription's buffer overflowed and the
+      // stream has ended. Resume from the documented cursor — it is at or
+      // before the first dropped message, so nothing is skipped (duplicates
+      // are filtered downstream by the sent ledger / idempotent handling).
+      const params = frame.params as { resume_after_rowid?: number; terminal?: boolean } | undefined;
+      if (typeof params?.resume_after_rowid === "number") {
+        this.opts.setCursor(params.resume_after_rowid);
+      }
+      console.error("[imsg] watch overflow — resubscribing from cursor");
+      void this.subscribe().catch((err) => {
+        console.error("[imsg] resubscribe after overflow failed:", err instanceof Error ? err.message : err);
+        this.handleChildDeath(); // full restart as a fallback
+      });
     }
   }
 

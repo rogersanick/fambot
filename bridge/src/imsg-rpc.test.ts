@@ -197,6 +197,60 @@ test("stale cursor falls back to a fresh watch subscription", async () => {
   h.rpc.stop();
 });
 
+test("watch.overflow advances the cursor and resubscribes on the same child", async () => {
+  const h = makeHarness();
+  await h.rpc.start();
+  const child = h.spawned[0]!;
+
+  child.notify({ id: 100, chat_id: 1, chat_guid: "g", guid: "m100", text: "x" });
+  await until(() => h.cursor.value === 100);
+
+  // Terminal overflow notification per docs/rpc.md: the stream has ended and
+  // the client must resume from resume_after_rowid.
+  child.stdout.write(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "watch.overflow",
+      params: { subscription: 1, resume_after_rowid: 9000, reason: "buffer_limit_exceeded", terminal: true },
+    }) + "\n",
+  );
+
+  await until(() => child.requests.filter((r) => r.method === "watch.subscribe").length === 2);
+  const resub = child.requests.filter((r) => r.method === "watch.subscribe")[1]!;
+  assert.equal(resub.params.since_rowid, 9000);
+  assert.equal(h.cursor.value, 9000);
+  assert.equal(h.spawned.length, 1); // no restart needed
+
+  // Stream works again after resubscribe.
+  child.notify({ id: 9001, chat_id: 1, chat_guid: "g", guid: "m9001", text: "y" });
+  await until(() => h.messages.length === 2);
+
+  h.rpc.stop();
+});
+
+test("rpc errors surface the actionable data field", async () => {
+  const h = makeHarness();
+  await h.rpc.start();
+  const child = h.spawned[0]!;
+
+  child.handlers.set("chats.list", (req) => {
+    child.stdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: req.id,
+        error: {
+          code: -32603,
+          message: "Internal error",
+          data: "authorization denied (code: 23)\n\n⚠️  Permission Error: Cannot access Messages database",
+        },
+      }) + "\n",
+    );
+  });
+
+  await assert.rejects(h.rpc.chatsList(1), /authorization denied/);
+  h.rpc.stop();
+});
+
 test("stop() kills the child and does not restart", async () => {
   const h = makeHarness();
   await h.rpc.start();
