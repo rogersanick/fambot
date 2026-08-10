@@ -75,6 +75,33 @@ async function defaultChannelId(db: Db, householdId: string, chatGuid?: string):
   return data?.id ?? null;
 }
 
+/**
+ * The current instant expressed in `timeZone`, e.g. "2026-08-09T21:47:03-04:00".
+ * Models are bad at timezone conversion; handing them local wall-clock time
+ * with the right offset makes "remind me in 3 minutes" copy-paste arithmetic.
+ */
+function nowIn(timeZone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+      timeZoneName: "longOffset",
+    }).formatToParts(new Date());
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+    const rawOffset = get("timeZoneName").replace("GMT", "");
+    const offset = rawOffset === "" ? "+00:00" : rawOffset;
+    return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}${offset}`;
+  } catch {
+    return new Date().toISOString(); // unknown timezone string — fall back to UTC
+  }
+}
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type ToolHandler<A> = (args: A, db: Db, userId: string) => Promise<any>;
 
@@ -101,7 +128,7 @@ export function registerFambotTools(server: McpServer): void {
 
   tool(
     "get_context",
-    "Call this first. Returns the caller's households (members, channels, timezone), the current time, and — when chat_guid is given — which household that iMessage chat belongs to (null household_for_chat means the chat is not set up yet; use setup_household).",
+    "Call this first. Returns the caller's households (members, channels, timezone, now_local — the current time in the household's timezone), and — when chat_guid is given — which household that iMessage chat belongs to (null household_for_chat means the chat is not set up yet; use setup_household). Do all date/time math from now_local, keeping its UTC offset.",
     z.object({
       chat_guid: z.string().optional().describe("iMessage chat GUID to resolve to a household"),
     }),
@@ -118,8 +145,13 @@ export function registerFambotTools(server: McpServer): void {
           households?.find((h) => h.channels.some((c) => c.chat_guid === chat_guid))?.id ?? null;
       }
       return {
-        now: new Date().toISOString(),
-        households: households ?? [],
+        now_utc: new Date().toISOString(),
+        households: (households ?? []).map((h) => ({
+          ...h,
+          // Current wall-clock time in this household's timezone. Use this for
+          // ALL date math (fire_at, starts_at, due dates) — keep its offset.
+          now_local: nowIn(h.timezone),
+        })),
         ...(chat_guid !== undefined ? { household_for_chat: householdForChat } : {}),
       };
     },
@@ -418,6 +450,13 @@ export function registerFambotTools(server: McpServer): void {
         defaultChannelId(db, args.household_id, args.chat_guid),
       ]);
       if (args.chat_guid && !channelId) throw new Error(`no channel with chat_guid ${args.chat_guid} in this household`);
+      // Guard against model timezone-math errors: a fire_at in the past would
+      // fire immediately (or was meant for a different wall-clock time).
+      if (Date.parse(args.fire_at) < Date.now() - 60_000) {
+        throw new Error(
+          `fire_at ${args.fire_at} is in the past — compute times from the household's now_local (get_context) and keep its UTC offset`,
+        );
+      }
       const { data, error } = await db
         .from("reminders")
         .insert({
