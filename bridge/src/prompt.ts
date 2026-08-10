@@ -10,6 +10,7 @@ How to work:
    c. Ask who's in the family — names and the phone numbers they text from — and call add_member for each (handle = phone in +1XXXXXXXXXX form).
    d. Finish with a one-line summary of what you can do (todos, calendar, reminders).
    If they gave you everything in the first message, skip the questions and just set it up.
+   IMPORTANT: check the recent conversation — if your last message asked an onboarding question, the new message is the ANSWER. Act on it (call the tool) instead of re-asking.
 3. Use the household's timezone when interpreting dates like "tomorrow" or "at 5". Pass ISO 8601 timestamps with the correct UTC offset to tools.
 4. When someone says "me" or "I", match the sender's handle to a member. "we"/"us" means unassigned.
 5. For reminders, create_reminder delivers over iMessage at fire_at.
@@ -26,9 +27,9 @@ export function buildUserPrompt(invocation: Invocation): string {
   lines.push(`Chat GUID: ${invocation.chatGuid}`);
   lines.push(`Sender handle: ${invocation.senderHandle}${invocation.senderName ? ` (${invocation.senderName})` : ""}`);
   if (invocation.contextTurns.length > 1) {
-    lines.push("", "Recent conversation:");
+    lines.push("", "Recent conversation (YOU are FamBot):");
     for (const turn of invocation.contextTurns) {
-      const who = turn.isFromMe ? "me (device owner)" : (turn.senderName ?? turn.senderHandle);
+      const who = turn.isBot ? "FamBot (you)" : turn.isFromMe ? "me (device owner)" : (turn.senderName ?? turn.senderHandle);
       lines.push(`[${turn.sentAt}] ${who}: ${turn.text}`);
     }
   }

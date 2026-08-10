@@ -99,10 +99,19 @@ test("tagged message produces an invocation with sender details", () => {
   assert.equal(invocations[0]!.chatGuid, CHAT);
 });
 
-test("bot's own prefixed output is dropped in local-dev", () => {
+test("bot's own prefixed output never invokes but is kept as context", () => {
   const { handler, invocations } = setup();
-  handler(msg({ is_from_me: true, text: "Fambot says: 🤖✨\nAdded! fambot rules" }));
+  handler(msg({ is_from_me: true, text: "Fambot says: 🤖✨\nWhat should we call your household?" }));
   assert.equal(invocations.length, 0);
+
+  // The next invocation carries the bot's question so multi-turn flows work.
+  handler(msg({ text: "@fambot The Rogers" }));
+  assert.equal(invocations.length, 1);
+  const turns = invocations[0]!.contextTurns;
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0]!.isBot, true);
+  assert.equal(turns[0]!.senderName, "FamBot");
+  assert.equal(turns[0]!.text, "What should we call your household?"); // prefix stripped
 });
 
 test("sent-ledger hit is dropped even without prefix", () => {

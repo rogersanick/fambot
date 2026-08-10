@@ -76,10 +76,25 @@ export function createInboundHandler(deps: {
     // Self-message handling. Our own sends echo back through the watch stream.
     if (msg.is_from_me) {
       if (config.profile === "production") return; // plain is_from_me drop
-      // local-dev: bot and developer share one identity. Drop only if it is
-      // recognizably the bot's own output; otherwise it's the developer typing.
-      if (text.startsWith(config.botMessagePrefix)) return;
-      if (state.wasSentByUs(messageGuid)) return;
+      // local-dev: bot and developer share one identity. If this is
+      // recognizably the bot's own output, buffer it as a bot turn — multi-turn
+      // flows (onboarding Q&A) need the bot's questions in the context — but
+      // never invoke on it.
+      if (text.startsWith(config.botMessagePrefix) || state.wasSentByUs(messageGuid)) {
+        contextBuffer.add(chatGuid, {
+          messageGuid,
+          senderHandle: "__fambot__",
+          senderName: "FamBot",
+          text: text.startsWith(config.botMessagePrefix)
+            ? text.slice(config.botMessagePrefix.length).trim()
+            : text,
+          sentAt: msg.created_at ?? new Date().toISOString(),
+          invokedBot: false,
+          isFromMe: true,
+          isBot: true,
+        });
+        return;
+      }
     }
 
     const sentAt = msg.created_at ?? new Date().toISOString();
@@ -97,6 +112,7 @@ export function createInboundHandler(deps: {
       sentAt,
       invokedBot: invoked,
       isFromMe: msg.is_from_me ?? false,
+      isBot: false,
     });
 
     if (!invoked) return; // untagged messages never leave the Mac

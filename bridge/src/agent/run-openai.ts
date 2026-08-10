@@ -85,6 +85,9 @@ export async function runOpenAiAgent(request: AgentRequest, options: OpenAiAgent
         } catch (err) {
           result = JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
         }
+        console.log(
+          `[agent]   tool ${call.function.name}(${(call.function.arguments ?? "").slice(0, 160)}) → ${result.slice(0, 200).replace(/\n/g, " ")}`,
+        );
         messages.push({ role: "tool", content: result, tool_call_id: call.id });
       }
     }

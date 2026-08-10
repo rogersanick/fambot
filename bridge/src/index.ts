@@ -35,6 +35,18 @@ async function sendPrefixed(chatGuid: string, text: string): Promise<void> {
   const body = config.botMessagePrefix ? `${config.botMessagePrefix}\n${text}` : text;
   const result = await rpc.send({ chat_guid: chatGuid, text: body });
   state.recordSent(result.guid);
+  // Record our own reply immediately so multi-turn flows (onboarding Q&A)
+  // see both sides of the conversation even before the watch echo arrives.
+  contextBuffer.add(chatGuid, {
+    messageGuid: result.guid ?? `sent-${Date.now()}`,
+    senderHandle: "__fambot__",
+    senderName: "FamBot",
+    text,
+    sentAt: new Date().toISOString(),
+    invokedBot: false,
+    isFromMe: true,
+    isBot: true,
+  });
 }
 
 async function runAgent(request: AgentRequest): Promise<string> {
@@ -79,7 +91,7 @@ function handleInvocation(invocation: Invocation): void {
       await sendPrefixed(invocation.chatGuid, reply);
       // Let the sender answer a follow-up question without re-tagging the bot.
       followUps.open(invocation.chatGuid, invocation.senderHandle);
-      console.log(`[agent] replied in ${Date.now() - started}ms`);
+      console.log(`[agent] replied in ${Date.now() - started}ms: "${reply.slice(0, 160).replace(/\n/g, " ")}"`);
     } catch (err) {
       console.error("[agent] run failed:", err instanceof Error ? err.message : err);
       await sendPrefixed(invocation.chatGuid, "Sorry, I hit a snag handling that — try again?").catch(() => {});

@@ -6,6 +6,8 @@ export interface ContextTurn {
   sentAt: string; // ISO timestamp
   invokedBot: boolean;
   isFromMe: boolean;
+  /** The bot's own reply (buffered so multi-turn flows see both sides). */
+  isBot: boolean;
 }
 
 const MAX_TURNS = 8;
@@ -21,6 +23,9 @@ export class ContextBuffer {
 
   add(chatGuid: string, turn: ContextTurn): void {
     const list = this.channels.get(chatGuid) ?? [];
+    // Bot replies are recorded at send time AND echo back via the watch
+    // stream; the same GUID must not appear twice.
+    if (list.some((t) => t.messageGuid === turn.messageGuid)) return;
     list.push(turn);
     this.channels.set(chatGuid, this.prune(list));
   }
