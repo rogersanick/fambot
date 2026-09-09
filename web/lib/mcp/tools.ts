@@ -55,6 +55,36 @@ async function callerMemberId(db: Db, householdId: string, userId: string): Prom
   return data?.id ?? null;
 }
 
+/** Escape %/_ so a list name can be matched case-insensitively via ilike. */
+function ilikeExact(name: string): string {
+  return name.replace(/[\\%_]/g, "\\$&");
+}
+
+async function findListId(db: Db, householdId: string, name: string): Promise<string | null> {
+  const { data, error } = await db
+    .from("lists")
+    .select("id")
+    .eq("household_id", householdId)
+    .ilike("name", ilikeExact(name.trim()))
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data?.id ?? null;
+}
+
+/** Lists are referenced by name in tool calls; missing ones are created. */
+async function getOrCreateListId(db: Db, householdId: string, name: string, userId: string): Promise<string> {
+  const existing = await findListId(db, householdId, name);
+  if (existing) return existing;
+  const createdBy = await callerMemberId(db, householdId, userId);
+  const { data, error } = await db
+    .from("lists")
+    .insert({ household_id: householdId, name: name.trim(), created_by: createdBy })
+    .select("id")
+    .single();
+  if (error) throw new Error(error.message);
+  return data.id;
+}
+
 async function defaultChannelId(db: Db, householdId: string, chatGuid?: string): Promise<string | null> {
   if (chatGuid) {
     const { data } = await db
@@ -255,16 +285,20 @@ export function registerFambotTools(server: McpServer): void {
 
   tool(
     "create_task",
-    "Add a todo/task to the household list.",
+    "Add a todo/task. Pass list to put it on a named list (e.g. 'Costco') — the list is created automatically if it doesn't exist. Omit list for the general list.",
     z.object({
       household_id: z.string().uuid(),
       title: z.string().min(1),
       notes: z.string().optional(),
       assignee_member_id: z.string().uuid().optional().describe("Member the task is assigned to"),
       due_at: iso("Due date/time").optional(),
+      list: z.string().optional().describe("List name, e.g. 'Costco' — created if missing"),
     }),
     async (args, db, userId) => {
-      const createdBy = await callerMemberId(db, args.household_id, userId);
+      const [createdBy, listId] = await Promise.all([
+        callerMemberId(db, args.household_id, userId),
+        args.list ? getOrCreateListId(db, args.household_id, args.list, userId) : Promise.resolve(null),
+      ]);
       const { data, error } = await db
         .from("tasks")
         .insert({
@@ -273,42 +307,55 @@ export function registerFambotTools(server: McpServer): void {
           notes: args.notes ?? null,
           assignee_id: args.assignee_member_id ?? null,
           due_at: args.due_at ?? null,
+          list_id: listId,
           created_by: createdBy,
         })
-        .select("id, title, status, due_at, assignee_id")
+        .select("id, title, status, due_at, assignee_id, list:lists(name)")
         .single();
       if (error) throw new Error(error.message);
-      return data;
+      return { ...data, list: data.list?.name ?? null };
     },
   );
 
   tool(
     "list_tasks",
-    "List household tasks. Defaults to open tasks.",
+    "List household tasks. Defaults to open tasks. Pass list to see one named list only ('general' for tasks not on any list).",
     z.object({
       household_id: z.string().uuid(),
       status: z.enum(["open", "done", "cancelled", "all"]).optional(),
       assignee_member_id: z.string().uuid().optional(),
+      list: z.string().optional().describe("List name, or 'general' for unlisted tasks"),
     }),
     async (args, db) => {
       let q = db
         .from("tasks")
-        .select("id, title, notes, status, due_at, completed_at, assignee:members!tasks_assignee_id_fkey ( id, display_name )")
+        .select(
+          "id, title, notes, status, due_at, completed_at, assignee:members!tasks_assignee_id_fkey ( id, display_name ), list:lists ( name )",
+        )
         .eq("household_id", args.household_id)
         .order("due_at", { ascending: true, nullsFirst: false })
         .order("created_at");
       const status = args.status ?? "open";
       if (status !== "all") q = q.eq("status", status);
       if (args.assignee_member_id) q = q.eq("assignee_id", args.assignee_member_id);
+      if (args.list) {
+        if (args.list.trim().toLowerCase() === "general") {
+          q = q.is("list_id", null);
+        } else {
+          const listId = await findListId(db, args.household_id, args.list);
+          if (!listId) throw new Error(`no list named "${args.list}" — see list_lists`);
+          q = q.eq("list_id", listId);
+        }
+      }
       const { data, error } = await q;
       if (error) throw new Error(error.message);
-      return data;
+      return (data ?? []).map((t) => ({ ...t, list: t.list?.name ?? null }));
     },
   );
 
   tool(
     "update_task",
-    "Update a task: retitle, reassign, change due date, or set status (done to complete, cancelled to drop, open to reopen).",
+    "Update a task: retitle, reassign, change due date, move between lists (list name, or null for the general list), or set status (done to complete, cancelled to drop, open to reopen).",
     z.object({
       task_id: z.string().uuid(),
       title: z.string().optional(),
@@ -316,8 +363,9 @@ export function registerFambotTools(server: McpServer): void {
       status: z.enum(["open", "done", "cancelled"]).optional(),
       assignee_member_id: z.string().uuid().nullable().optional(),
       due_at: iso("Due date/time").nullable().optional(),
+      list: z.string().nullable().optional().describe("Move to this list (created if missing); null moves to general"),
     }),
-    async (args, db) => {
+    async (args, db, userId) => {
       const patch: Database["public"]["Tables"]["tasks"]["Update"] = {};
       if (args.title !== undefined) patch.title = args.title;
       if (args.notes !== undefined) patch.notes = args.notes;
@@ -327,14 +375,100 @@ export function registerFambotTools(server: McpServer): void {
       }
       if (args.assignee_member_id !== undefined) patch.assignee_id = args.assignee_member_id;
       if (args.due_at !== undefined) patch.due_at = args.due_at;
+      if (args.list !== undefined) {
+        if (args.list === null) {
+          patch.list_id = null;
+        } else {
+          const { data: task, error: taskError } = await db
+            .from("tasks")
+            .select("household_id")
+            .eq("id", args.task_id)
+            .single();
+          if (taskError) throw new Error(taskError.message);
+          patch.list_id = await getOrCreateListId(db, task.household_id, args.list, userId);
+        }
+      }
       const { data, error } = await db
         .from("tasks")
         .update(patch)
         .eq("id", args.task_id)
-        .select("id, title, status, due_at, assignee_id")
+        .select("id, title, status, due_at, assignee_id, list:lists(name)")
+        .single();
+      if (error) throw new Error(error.message);
+      return { ...data, list: data.list?.name ?? null };
+    },
+  );
+
+  tool(
+    "create_list",
+    "Create an empty named todo list (e.g. 'Costco', 'Weekend chores'). Not needed before create_task — that creates lists automatically.",
+    z.object({
+      household_id: z.string().uuid(),
+      name: z.string().min(1),
+    }),
+    async (args, db, userId) => {
+      const existing = await findListId(db, args.household_id, args.name);
+      if (existing) throw new Error(`a list named "${args.name.trim()}" already exists`);
+      const id = await getOrCreateListId(db, args.household_id, args.name, userId);
+      return { id, name: args.name.trim() };
+    },
+  );
+
+  tool(
+    "list_lists",
+    "List the household's named todo lists with open-task counts. Tasks not on any list are on the implicit 'general' list.",
+    z.object({ household_id: z.string().uuid() }),
+    async ({ household_id }, db) => {
+      const [{ data: lists, error }, { data: open, error: tasksError }] = await Promise.all([
+        db.from("lists").select("id, name").eq("household_id", household_id).order("created_at"),
+        db.from("tasks").select("list_id").eq("household_id", household_id).eq("status", "open"),
+      ]);
+      if (error) throw new Error(error.message);
+      if (tasksError) throw new Error(tasksError.message);
+      const counts = new Map<string | null, number>();
+      for (const t of open ?? []) counts.set(t.list_id, (counts.get(t.list_id) ?? 0) + 1);
+      return [
+        { name: "general", open_tasks: counts.get(null) ?? 0 },
+        ...(lists ?? []).map((l) => ({ name: l.name, open_tasks: counts.get(l.id) ?? 0 })),
+      ];
+    },
+  );
+
+  tool(
+    "rename_list",
+    "Rename a todo list.",
+    z.object({
+      household_id: z.string().uuid(),
+      name: z.string().min(1).describe("Current list name"),
+      new_name: z.string().min(1),
+    }),
+    async (args, db) => {
+      const listId = await findListId(db, args.household_id, args.name);
+      if (!listId) throw new Error(`no list named "${args.name}" — see list_lists`);
+      const { data, error } = await db
+        .from("lists")
+        .update({ name: args.new_name.trim() })
+        .eq("id", listId)
+        .select("id, name")
         .single();
       if (error) throw new Error(error.message);
       return data;
+    },
+  );
+
+  tool(
+    "delete_list",
+    "Delete a todo list. Its tasks are NOT deleted — they move to the general list.",
+    z.object({
+      household_id: z.string().uuid(),
+      name: z.string().min(1),
+    }),
+    async (args, db) => {
+      const listId = await findListId(db, args.household_id, args.name);
+      if (!listId) throw new Error(`no list named "${args.name}" — see list_lists`);
+      const { error } = await db.from("lists").delete().eq("id", listId);
+      if (error) throw new Error(error.message);
+      return { deleted: args.name, note: "its tasks moved to the general list" };
     },
   );
 

@@ -3,8 +3,8 @@ import { BridgeState } from "./state.js";
 import { ContextBuffer } from "./context-buffer.js";
 import { InvocationMatcher } from "./invocation.js";
 import { ImsgRpc } from "./imsg-rpc.js";
-import { createInboundHandler, FollowUpWindow, type Invocation } from "./inbound.js";
-import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.js";
+import { createInboundHandler, normalizeHandle, type Invocation } from "./inbound.js";
+import { SYSTEM_PROMPT, buildUserPrompt, type ChatParticipant } from "./prompt.js";
 import { runCliAgent } from "./agent/run-cli.js";
 import { runOpenAiAgent } from "./agent/run-openai.js";
 import { connectMcp } from "./agent/mcp-port.js";
@@ -16,7 +16,6 @@ const config = loadConfig();
 const state = new BridgeState(config.statePath);
 const contextBuffer = new ContextBuffer();
 const matcher = new InvocationMatcher(config.botName);
-const followUps = new FollowUpWindow();
 const session = new AgentSession(
   config.supabaseUrl,
   config.supabaseAnonKey,
@@ -68,7 +67,7 @@ async function runAgent(request: AgentRequest): Promise<string> {
       env: { FAMBOT_MCP_URL: config.mcpUrl, FAMBOT_MCP_TOKEN: token, FAMBOT_MCP_CONFIG: mcpConfig },
     });
   }
-  const tools = await connectMcp(config.mcpUrl, token);
+  const tools = await connectMcp(config.mcpUrl, token, config.agentTimeoutMs);
   return runOpenAiAgent(request, {
     baseUrl: config.openaiBaseUrl,
     model: config.openaiModel,
@@ -76,6 +75,30 @@ async function runAgent(request: AgentRequest): Promise<string> {
     timeoutMs: config.agentTimeoutMs,
     tools,
   });
+}
+
+/**
+ * The chat's participant handles (for auto-onboarding), with display names
+ * resolved opportunistically from whoever has spoken recently. Best-effort:
+ * returns null when the lookup fails so the agent run proceeds without it.
+ */
+async function chatParticipants(invocation: Invocation): Promise<ChatParticipant[] | null> {
+  try {
+    const chats = await rpc.chatsList(100);
+    const chat = chats.find((c) => c.guid === invocation.chatGuid);
+    if (!chat?.participants?.length) return null;
+    const names = new Map<string, string>();
+    for (const turn of invocation.contextTurns) {
+      if (!turn.isBot && turn.senderName) names.set(turn.senderHandle, turn.senderName);
+    }
+    return chat.participants.map((raw) => {
+      const handle = normalizeHandle(raw);
+      return { handle, name: names.get(handle) ?? null };
+    });
+  } catch (err) {
+    console.error("[agent] participants lookup failed:", err instanceof Error ? err.message : err);
+    return null;
+  }
 }
 
 // One agent run at a time per chat; runs in different chats may interleave.
@@ -87,10 +110,9 @@ function handleInvocation(invocation: Invocation): void {
     const started = Date.now();
     console.log(`[agent] ${invocation.chatGuid}: "${invocation.text.slice(0, 80)}"`);
     try {
-      const reply = await runAgent({ system: SYSTEM_PROMPT, user: buildUserPrompt(invocation) });
+      const participants = await chatParticipants(invocation);
+      const reply = await runAgent({ system: SYSTEM_PROMPT, user: buildUserPrompt(invocation, participants) });
       await sendPrefixed(invocation.chatGuid, reply);
-      // Let the sender answer a follow-up question without re-tagging the bot.
-      followUps.open(invocation.chatGuid, invocation.senderHandle);
       console.log(`[agent] replied in ${Date.now() - started}ms: "${reply.slice(0, 160).replace(/\n/g, " ")}"`);
     } catch (err) {
       console.error("[agent] run failed:", err instanceof Error ? err.message : err);
@@ -105,7 +127,6 @@ const handleInbound = createInboundHandler({
   state,
   contextBuffer,
   matcher,
-  followUps,
   onInvocation: handleInvocation,
 });
 

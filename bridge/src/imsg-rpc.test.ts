@@ -251,6 +251,30 @@ test("rpc errors surface the actionable data field", async () => {
   h.rpc.stop();
 });
 
+test("known-harmless macOS Contacts stderr noise is filtered from the log", async () => {
+  const h = makeHarness();
+  await h.rpc.start();
+  const child = h.spawned[0]!;
+
+  const logged: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => logged.push(args.join(" "));
+  try {
+    child.stderr.write(
+      "2026-08-10 05:00:28.014 imsg[41098:1149174] Could not fetch group for change type 1 with identifier FE49568C-D758-4C1D-B38A-5C0CD0FDFC54:ABGroup, making it a delete change type.\n",
+    );
+    child.stderr.write("something actually important\n");
+    await until(() => logged.some((l) => l.includes("something actually important")));
+  } finally {
+    console.error = original;
+  }
+  assert.equal(
+    logged.some((l) => l.includes("ABGroup")),
+    false,
+  );
+  h.rpc.stop();
+});
+
 test("stop() kills the child and does not restart", async () => {
   const h = makeHarness();
   await h.rpc.start();

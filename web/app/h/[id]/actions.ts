@@ -44,12 +44,37 @@ export async function createTask(householdId: string, timezone: string, fd: Form
   if (!title) return;
   const supabase = await db();
   const assignee = str(fd, "assignee_id");
+  const listId = str(fd, "list_id");
   await supabase.from("tasks").insert({
     household_id: householdId,
     title,
     assignee_id: assignee || null,
     due_at: localToIso(str(fd, "due_at"), timezone),
+    list_id: listId || null,
   });
+  revalidatePath(`/h/${householdId}`);
+}
+
+export async function createList(householdId: string, fd: FormData) {
+  const name = str(fd, "name");
+  if (!name) return;
+  const supabase = await db();
+  await supabase.from("lists").insert({ household_id: householdId, name });
+  revalidatePath(`/h/${householdId}`);
+}
+
+export async function renameList(householdId: string, listId: string, fd: FormData) {
+  const name = str(fd, "name");
+  if (!name) return;
+  const supabase = await db();
+  await supabase.from("lists").update({ name }).eq("id", listId);
+  revalidatePath(`/h/${householdId}`);
+}
+
+/** Deleting a list moves its tasks to General (FK is on delete set null). */
+export async function deleteList(householdId: string, listId: string) {
+  const supabase = await db();
+  await supabase.from("lists").delete().eq("id", listId);
   revalidatePath(`/h/${householdId}`);
 }
 

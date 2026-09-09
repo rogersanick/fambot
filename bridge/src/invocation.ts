@@ -1,6 +1,7 @@
 /**
- * Invocation tag matching: `@fambot` / `fambot` (or the configured BOT_NAME),
- * case-insensitive, word-bounded, with or without the leading `@`.
+ * Invocation tag matching: an explicit `@fambot` (or `@` + the configured
+ * BOT_NAME), case-insensitive, word-bounded. The bare name without `@` never
+ * invokes — the bot only responds when deliberately tagged.
  */
 export class InvocationMatcher {
   private readonly names: string[];
@@ -12,7 +13,7 @@ export class InvocationMatcher {
 
   matches(text: string): boolean {
     for (const name of this.names) {
-      const re = new RegExp(`(^|[^a-z0-9])@?${escapeRegExp(name)}($|[^a-z0-9])`, "i");
+      const re = new RegExp(`(^|[^a-z0-9])@${escapeRegExp(name)}($|[^a-z0-9])`, "i");
       if (re.test(text)) return true;
     }
     return false;

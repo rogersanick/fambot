@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { BridgeState } from "./state.js";
 import { ContextBuffer } from "./context-buffer.js";
 import { InvocationMatcher } from "./invocation.js";
-import { createInboundHandler, FollowUpWindow, type Invocation } from "./inbound.js";
+import { createInboundHandler, type Invocation } from "./inbound.js";
 import type { BridgeConfig } from "./config.js";
 import type { ImsgMessage } from "./imsg-rpc.js";
 
@@ -38,17 +38,15 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 function setup(overrides: Partial<BridgeConfig> = {}) {
   const config = makeConfig(overrides);
   const state = new BridgeState(config.statePath);
-  const followUps = new FollowUpWindow();
   const invocations: Invocation[] = [];
   const handler = createInboundHandler({
     config,
     state,
     contextBuffer: new ContextBuffer(),
     matcher: new InvocationMatcher(config.botName),
-    followUps,
     onInvocation: (inv) => invocations.push(inv),
   });
-  return { config, state, handler, followUps, invocations };
+  return { config, state, handler, invocations };
 }
 
 function msg(overrides: Partial<ImsgMessage>): ImsgMessage {
@@ -92,11 +90,21 @@ test("untagged messages are buffered but do not invoke", () => {
 
 test("tagged message produces an invocation with sender details", () => {
   const { handler, invocations } = setup();
-  handler(msg({ text: "fambot what's on the list?", sender: "+15559990000", sender_name: "Dana" }));
+  handler(msg({ text: "@fambot what's on the list?", sender: "+15559990000", sender_name: "Dana" }));
   assert.equal(invocations.length, 1);
   assert.equal(invocations[0]!.senderHandle, "+15559990000");
   assert.equal(invocations[0]!.senderName, "Dana");
   assert.equal(invocations[0]!.chatGuid, CHAT);
+});
+
+test("the bare name without @ does not invoke — only an explicit @fambot does", () => {
+  const { handler, invocations } = setup();
+  handler(msg({ text: "fambot what's on the list?" }));
+  handler(msg({ text: "Fambot Jess has paid the credit card" }));
+  handler(msg({ text: "tell fambot to add milk" }));
+  assert.equal(invocations.length, 0);
+  handler(msg({ text: "@Fambot what's on the list?" }));
+  assert.equal(invocations.length, 1);
 });
 
 test("bot's own prefixed output never invokes but is kept as context", () => {
@@ -128,6 +136,12 @@ test("developer typing from own identity still invokes in local-dev", () => {
   assert.equal(invocations[0]!.senderHandle, "__me__");
 });
 
+test("an empty bot prefix does not swallow the developer's own messages", () => {
+  const { handler, invocations } = setup({ botMessagePrefix: "" });
+  handler(msg({ is_from_me: true, text: "@fambot remind me to stretch at 5" }));
+  assert.equal(invocations.length, 1);
+});
+
 test("production drops all is_from_me messages", () => {
   const { handler, invocations } = setup({ profile: "production" });
   handler(msg({ is_from_me: true, text: "@fambot hi" }));
@@ -143,30 +157,18 @@ test("custom bot name matches alongside fambot", () => {
   assert.equal(invocations.length, 2);
 });
 
-test("an open follow-up window lets the same sender continue without a mention", () => {
-  const { handler, followUps, invocations } = setup();
-  handler(msg({ text: "the rogers household please", sender: "+15551234567" }));
-  assert.equal(invocations.length, 0); // no window yet, no mention
-
-  followUps.open(CHAT, "+15551234567"); // bot replied to this sender
+test("an untagged reply right after the bot speaks does not invoke — no follow-up window", () => {
+  const { handler, invocations } = setup();
+  handler(msg({ text: "@fambot help us get set up", sender: "+15551234567" }));
+  assert.equal(invocations.length, 1);
+  handler(msg({ is_from_me: true, text: "Fambot says: 🤖✨\nWhat should we call your household?" }));
+  // The answer arrives untagged — must be buffered as context only.
   handler(msg({ text: "The Rogers", sender: "+15551234567" }));
   assert.equal(invocations.length, 1);
-  assert.equal(invocations[0]!.text, "The Rogers");
-
-  // One follow-up per bot reply: the window is consumed.
-  handler(msg({ text: "also add grandma", sender: "+15551234567" }));
-  assert.equal(invocations.length, 1);
-});
-
-test("follow-up window ignores other senders and expires", () => {
-  const followUps = new FollowUpWindow(1_000);
-  const now = Date.now();
-  followUps.open(CHAT, "+15551234567", now);
-
-  assert.equal(followUps.consume(CHAT, "+15559990000", now), false); // other sender
-  assert.equal(followUps.consume(CHAT, "+15551234567", now + 2_000), false); // expired
-  followUps.open(CHAT, "+15551234567", now);
-  assert.equal(followUps.consume(CHAT, "+15551234567", now + 500), true); // in time
+  // Tagged answer goes through, with the untagged one riding along as context.
+  handler(msg({ text: "@fambot The Rogers", sender: "+15551234567" }));
+  assert.equal(invocations.length, 2);
+  assert.ok(invocations[1]!.contextTurns.some((t) => t.text === "The Rogers"));
 });
 
 test("watch cursor persists across state reloads", () => {

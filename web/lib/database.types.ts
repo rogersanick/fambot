@@ -141,6 +141,45 @@ export type Database = {
         }
         Relationships: []
       }
+      lists: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          household_id: string
+          id: string
+          name: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          household_id: string
+          id?: string
+          name: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          household_id?: string
+          id?: string
+          name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lists_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "members"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "lists_household_id_fkey"
+            columns: ["household_id"]
+            isOneToOne: false
+            referencedRelation: "households"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       members: {
         Row: {
           created_at: string
@@ -276,6 +315,7 @@ export type Database = {
           due_at: string | null
           household_id: string
           id: string
+          list_id: string | null
           notes: string | null
           status: string
           title: string
@@ -289,6 +329,7 @@ export type Database = {
           due_at?: string | null
           household_id: string
           id?: string
+          list_id?: string | null
           notes?: string | null
           status?: string
           title: string
@@ -302,6 +343,7 @@ export type Database = {
           due_at?: string | null
           household_id?: string
           id?: string
+          list_id?: string | null
           notes?: string | null
           status?: string
           title?: string
@@ -327,6 +369,13 @@ export type Database = {
             columns: ["household_id"]
             isOneToOne: false
             referencedRelation: "households"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "tasks_list_id_fkey"
+            columns: ["list_id"]
+            isOneToOne: false
+            referencedRelation: "lists"
             referencedColumns: ["id"]
           },
         ]

@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SubmitButton } from "@/components/submit-button";
+import { AsciiMascot } from "@/components/ascii/ascii-mascot";
 
 export default async function RootPage() {
   const supabase = await createClient();
@@ -33,10 +35,11 @@ export default async function RootPage() {
 
   if (!households || households.length === 0) {
     return (
-      <main className="flex min-h-svh items-center justify-center p-6">
-        <Card className="w-full max-w-sm">
+      <main className="flex min-h-svh flex-col items-center justify-center gap-4 p-6">
+        <AsciiMascot className="text-primary animate-fade-up text-xs" />
+        <Card className="animate-fade-up w-full max-w-sm" style={{ animationDelay: "100ms" }}>
           <CardHeader>
-            <CardTitle>Create your household</CardTitle>
+            <CardTitle className="font-serif text-xl">Create your household</CardTitle>
             <CardDescription>
               One shared space for todos, calendar, and reminders. You can also let the agent set
               this up from the group chat.
@@ -52,7 +55,7 @@ export default async function RootPage() {
                 <Label htmlFor="timezone">Timezone</Label>
                 <Input id="timezone" name="timezone" defaultValue="America/New_York" />
               </div>
-              <Button type="submit">Create household</Button>
+              <SubmitButton>Create household</SubmitButton>
             </form>
           </CardContent>
         </Card>
@@ -61,10 +64,11 @@ export default async function RootPage() {
   }
 
   return (
-    <main className="flex min-h-svh items-center justify-center p-6">
-      <Card className="w-full max-w-sm">
+    <main className="flex min-h-svh flex-col items-center justify-center gap-4 p-6">
+      <AsciiMascot className="text-primary animate-fade-up text-xs" />
+      <Card className="animate-fade-up w-full max-w-sm" style={{ animationDelay: "100ms" }}>
         <CardHeader>
-          <CardTitle>Choose a household</CardTitle>
+          <CardTitle className="font-serif text-xl">Choose a household</CardTitle>
           <CardDescription>You&apos;re a member of more than one.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-2">

@@ -65,6 +65,14 @@ export interface ImsgRpcOptions {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Known-harmless macOS Contacts-framework noise that imsg emits on stderr
+ * (e.g. "Could not fetch group for change type 1 with identifier …:ABGroup,
+ * making it a delete change type."). Frequent, not actionable — keep it out
+ * of the bridge log.
+ */
+const STDERR_NOISE = /Could not fetch group for change type \d+ with identifier .*ABGroup/;
 const DEFAULT_RESTART_MIN_MS = 1_000;
 const DEFAULT_RESTART_MAX_MS = 30_000;
 
@@ -140,7 +148,7 @@ export class ImsgRpc {
     createInterface({ input: child.stdout }).on("line", (line) => this.handleLine(line));
     if (child.stderr) {
       createInterface({ input: child.stderr }).on("line", (line) => {
-        if (line.trim()) console.error(`[imsg] ${line}`);
+        if (line.trim() && !STDERR_NOISE.test(line)) console.error(`[imsg] ${line}`);
       });
     }
 

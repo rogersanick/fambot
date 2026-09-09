@@ -20,38 +20,6 @@ export interface Invocation {
 }
 
 /**
- * Lets a conversation continue without re-tagging the bot: after the bot
- * replies to someone in a chat, that person's next message there (within the
- * TTL) is treated as directed at the bot. One follow-up per bot reply — each
- * reply re-opens the window — so multi-turn flows like household onboarding
- * ("what should I call your household?" → "The Rogers") read naturally while
- * the bot stays out of unrelated group chatter.
- */
-export class FollowUpWindow {
-  private windows = new Map<string, { handle: string; expiresAt: number }>();
-
-  constructor(private ttlMs = 3 * 60_000) {}
-
-  /** Called after the bot replies to `senderHandle` in `chatGuid`. */
-  open(chatGuid: string, senderHandle: string, now = Date.now()): void {
-    this.windows.set(chatGuid, { handle: senderHandle, expiresAt: now + this.ttlMs });
-  }
-
-  /** True (and closes the window) if this message continues the conversation. */
-  consume(chatGuid: string, senderHandle: string, now = Date.now()): boolean {
-    const window = this.windows.get(chatGuid);
-    if (!window) return false;
-    if (now > window.expiresAt) {
-      this.windows.delete(chatGuid);
-      return false;
-    }
-    if (window.handle !== senderHandle) return false;
-    this.windows.delete(chatGuid);
-    return true;
-  }
-}
-
-/**
  * Inbound message pipeline. Consumes `imsg rpc` watch notifications, applies
  * the per-profile filters, maintains the in-memory context buffer, and hands
  * invocations (tagged messages) to the agent runner.
@@ -61,10 +29,9 @@ export function createInboundHandler(deps: {
   state: BridgeState;
   contextBuffer: ContextBuffer;
   matcher: InvocationMatcher;
-  followUps: FollowUpWindow;
   onInvocation: (invocation: Invocation) => void;
 }): (message: ImsgMessage) => void {
-  const { config, state, contextBuffer, matcher, followUps, onInvocation } = deps;
+  const { config, state, contextBuffer, matcher, onInvocation } = deps;
 
   return function handleMessage(msg: ImsgMessage): void {
     const chatGuid = msg.chat_guid;
@@ -80,14 +47,20 @@ export function createInboundHandler(deps: {
       // recognizably the bot's own output, buffer it as a bot turn — multi-turn
       // flows (onboarding Q&A) need the bot's questions in the context — but
       // never invoke on it.
-      if (text.startsWith(config.botMessagePrefix) || state.wasSentByUs(messageGuid)) {
+      // Prefix check only when a prefix is configured — startsWith("") matches
+      // everything and would swallow the developer's own messages.
+      const isBotEcho =
+        (config.botMessagePrefix !== "" && text.startsWith(config.botMessagePrefix)) ||
+        state.wasSentByUs(messageGuid);
+      if (isBotEcho) {
         contextBuffer.add(chatGuid, {
           messageGuid,
           senderHandle: "__fambot__",
           senderName: "FamBot",
-          text: text.startsWith(config.botMessagePrefix)
-            ? text.slice(config.botMessagePrefix.length).trim()
-            : text,
+          text:
+            config.botMessagePrefix !== "" && text.startsWith(config.botMessagePrefix)
+              ? text.slice(config.botMessagePrefix.length).trim()
+              : text,
           sentAt: msg.created_at ?? new Date().toISOString(),
           invokedBot: false,
           isFromMe: true,
@@ -100,9 +73,9 @@ export function createInboundHandler(deps: {
     const sentAt = msg.created_at ?? new Date().toISOString();
     const senderHandle = msg.is_from_me ? "__me__" : normalizeHandle(msg.sender);
     const senderName = msg.sender_name?.trim() ? msg.sender_name : null;
-    // A mention anywhere invokes the bot; otherwise an open follow-up window
-    // (bot just replied to this sender in this chat) continues the conversation.
-    const invoked = matcher.matches(text) || followUps.consume(chatGuid, senderHandle);
+    // Only an explicit @mention invokes the bot — untagged messages (even
+    // direct replies to the bot's own question) are buffered as context only.
+    const invoked = matcher.matches(text);
 
     contextBuffer.add(chatGuid, {
       messageGuid,

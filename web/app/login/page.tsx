@@ -1,9 +1,11 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SubmitButton } from "@/components/submit-button";
+import { Typewriter } from "@/components/ascii/typewriter";
+import { FAMBOT_BANNER } from "@/components/ascii/banner";
 
 export default async function LoginPage({
   searchParams,
@@ -36,10 +38,26 @@ export default async function LoginPage({
   }
 
   return (
-    <main className="flex min-h-svh items-center justify-center p-6">
-      <Card className="w-full max-w-sm">
+    <main className="flex min-h-svh flex-col items-center justify-center gap-6 p-6">
+      <div className="animate-fade-up flex flex-col items-center gap-2">
+        <pre
+          className="text-primary text-[6px] leading-[1.15] font-bold select-none sm:text-[8px]"
+          aria-label="FamBot"
+          role="img"
+        >
+          {FAMBOT_BANNER}
+        </pre>
+        <Typewriter
+          lines={["> your household's shared brain"]}
+          className="text-muted-foreground text-xs"
+          cursorClassName="text-primary"
+        />
+      </div>
+      <Card className="animate-fade-up w-full max-w-sm" style={{ animationDelay: "120ms" }}>
         <CardHeader>
-          <CardTitle>{signup ? "Create your FamBot account" : "Sign in to FamBot"}</CardTitle>
+          <CardTitle className="font-serif text-xl">
+            {signup ? "Create your FamBot account" : "Sign in to FamBot"}
+          </CardTitle>
           <CardDescription>
             {signup ? "One account per family member (and one for your agent)." : "Your household's shared brain."}
           </CardDescription>
@@ -65,7 +83,7 @@ export default async function LoginPage({
                   : "Enter your email and password."}
               </p>
             )}
-            <Button type="submit">{signup ? "Sign up" : "Sign in"}</Button>
+            <SubmitButton>{signup ? "Sign up" : "Sign in"}</SubmitButton>
             <p className="text-center text-sm text-muted-foreground">
               {signup ? (
                 <a className="underline" href={`/login?next=${encodeURIComponent(next)}`}>
