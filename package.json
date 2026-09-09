@@ -1,22 +1,20 @@
 {
   "name": "fambot",
   "private": true,
-  "version": "0.1.0",
-  "description": "FamBot — household todos, calendar, and reminders as a Supabase/Next.js app with an MCP tool surface, an imsg bridge on your Mac, and a pluggable agent (osaurus, Claude Code, anything).",
+  "version": "2.0.0",
+  "description": "Fambot — AI-enabled family reminders, tasks, and calendar assistant. Hono API + worker on Fly, Neon Postgres, OpenAI interpretation, Mac imsg relay, Tauri desktop client.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
-    "bridge:dev": "npm --prefix bridge run dev",
-    "web:dev": "npm --prefix web run dev",
-    "db:start": "supabase start",
-    "db:stop": "supabase stop",
-    "db:reset": "supabase db reset",
-    "bootstrap": "node scripts/bootstrap-local.mjs",
-    "smoke:mcp": "node scripts/mcp-smoke.mjs",
-    "test": "npm --prefix bridge test",
-    "types:gen": "npx supabase gen types typescript --local > web/lib/database.types.ts"
-  },
-  "devDependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "@supabase/supabase-js": "^2.112.2",
-    "supabase": "^2.111.0"
+    "dev": "bun run scripts/dev.ts",
+    "dev:api": "bun --cwd apps/api dev",
+    "dev:worker": "bun --cwd apps/worker dev",
+    "dev:desktop": "bun --cwd apps/desktop dev",
+    "dev:bridge": "bun --cwd apps/bridge dev",
+    "db:push": "bun --cwd packages/database push",
+    "test": "bun test packages apps/api apps/worker apps/bridge",
+    "typecheck": "bun run --filter '*' typecheck"
   }
 }

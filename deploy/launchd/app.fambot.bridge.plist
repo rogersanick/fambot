@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fambot bridge as a launchd agent.
+     Install:
+       cp deploy/launchd/app.fambot.bridge.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/app.fambot.bridge.plist
+     Adjust paths for your machine; the binary running `bun` needs
+     Full Disk Access for chat.db. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>app.fambot.bridge</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/nicholasrogers/.bun/bin/bun</string>
+    <string>src/index.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/nicholasrogers/Desktop/Coding/fambot/apps/bridge</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/fambot-bridge.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/fambot-bridge.log</string>
+</dict>
+</plist>

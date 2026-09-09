@@ -1,0 +1,35 @@
+# Fambot on Fly.io: one app, two processes (api + worker), one Neon database.
+#
+# First deploy:
+#   fly launch --no-deploy   (or: fly apps create fambot)
+#   fly secrets set DATABASE_URL=... OPENAI_API_KEY=... BRIDGE_TOKEN=... \
+#     BETTER_AUTH_SECRET=... TOKEN_ENCRYPTION_KEY=... \
+#     GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=...
+#   fly deploy
+
+app = "fambot"
+primary_region = "ewr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[processes]
+  api = "bun apps/api/src/index.ts"
+  worker = "bun apps/worker/src/index.ts"
+
+[env]
+  PORT = "8787"
+  API_BASE_URL = "https://fambot.fly.dev"
+  APP_URL = "https://fambot.vercel.app"
+
+[http_service]
+  processes = ["api"]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = false   # the bridge keeps a WebSocket open
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

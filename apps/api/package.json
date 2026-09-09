@@ -1,0 +1,27 @@
+{
+  "name": "@fambot/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fambot/ai": "workspace:*",
+    "@fambot/calendar": "workspace:*",
+    "@fambot/database": "workspace:*",
+    "@fambot/domain": "workspace:*",
+    "@fambot/messaging": "workspace:*",
+    "@fambot/shared": "workspace:*",
+    "better-auth": "^1.3.0",
+    "drizzle-orm": "^0.44.0",
+    "hono": "^4.9.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "bun-types": "^1.2.0",
+    "typescript": "^5.7.0"
+  }
+}
