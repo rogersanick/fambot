@@ -1,62 +1,153 @@
-# FamBot
+# Fambot
 
-FamBot is your household's shared brain — todos, calendar, and reminders — that the whole family talks to by tagging `@fambot` in your ordinary iMessage group chat.
-
-The design is **maximally extensible, minimally scoped**:
-
-- **The app** is a Supabase-powered Next.js portal. It exposes everything it can do as **MCP tools** at `/mcp`. That's the whole product.
-- **The bridge** is the simplest possible always-on process on your Mac. It piggybacks on your existing iMessage identity via [imsg](https://imsg.sh), and when someone tags `@fambot` it invokes *your* agent, then texts the agent's reply back. It also delivers due reminders.
-- **The agent is pluggable.** Anything that can call MCP tools works: [osaurus](https://osaurus.ai) with local/Apple models, Claude Code when you want big-model power, or any OpenAI-compatible endpoint. Swap agents by editing one env var — the app never contains an LLM pipeline.
+Fambot is your household's shared brain — reminders, tasks, lists, and a calendar the whole family talks to in plain English. Tag `@fambot` in your ordinary iMessage group chat, or use the built-in chat in the desktop/web app; either way the same pipeline interprets the message with OpenAI, executes the action, and replies in the channel you asked from.
 
 ```
-iMessage ──▶ bridge (Mac, always on) ──▶ your agent ──▶ MCP tools ──▶ Supabase
-   ▲              │                          │                          ▲
-   └── reply ─────┘                          └──────── RLS-scoped ──────┘
+iMessage ──▶ bridge (your Mac) ──▶ ┌───────────────────────────┐
+                                   │  API (Bun + Hono)         │──▶ OpenAI (interpret only)
+Desktop / web app ──── REST ─────▶ │  worker (fires + nudges)  │
+                                   └────────────┬──────────────┘
+                                                ▼
+                                            Postgres
 ```
 
-Auth is boring on purpose: the agent is a real Supabase user and a household *member* with role `agent`. Its MCP calls carry its JWT, and Postgres row-level security is the only authorization layer.
+The LLM only ever proposes structured actions (`create_reminder`, `create_task`, `complete_task`, …) validated with Zod. Application code authorizes and executes them — the model never touches the database.
+
+**Semantics worth knowing:**
+
+- **Reminders** are fire-and-forget: delivered once per occurrence (one-shot or recurring), no completion state.
+- **Tasks** must be completed: at the due time the worker nudges you, then re-nudges every `nag_interval` until someone replies "done" (or checks it off in the app). Recurring tasks reschedule themselves on completion.
+- **Lists** are plain CRUD containers for tasks.
+- Task vs reminder is inferred from context ("make sure the trash goes out" → task; "remind me the game is at 6" → reminder).
 
 ## Repo structure
 
 ```
-fambot/
-  web/       # Next.js portal (todos/calendar/reminders UI) + MCP server at /mcp
-  bridge/    # Mac bridge: supervised `imsg rpc` child, agent adapters, reminder poller
-  supabase/  # one migration (6 tables + RLS + 2 RPCs), config for local stack
-  scripts/   # bootstrap-local, mcp-smoke, fake-imsg + fake-agent (test without Messages)
-  docs/      # INSTALL.md (start here), design spec
+apps/
+  api/       Bun + Hono API: auth, REST, ingest webhook, message pipeline, bridge WebSocket
+  worker/    reminder fires + task nag loop (atomic claims, rrule recurrence)
+  bridge/    Mac iMessage relay: forwards inbound texts to the API, sends replies via imsg
+  desktop/   Tauri 2 + React + Vite client (same code builds the web SPA)
+packages/
+  shared/    InboundMessage, ProposedAction Zod schemas, invocation matcher
+  database/  Drizzle schema + migrations
+  domain/    validation / authorization / resolution + reminder/task/list/event services
+  ai/        AIProvider (OpenAI structured outputs, retry-on-invalid, audit logging)
+  messaging/ channel router: app chat + iMessage outbox
+  calendar/  internal + Google Calendar providers (per-user OAuth, encrypted tokens)
 ```
 
-## Quickstart
+## Prerequisites
 
-Full walkthrough with permissions and agent setup: **[docs/INSTALL.md](docs/INSTALL.md)**.
+| What | Why | Install |
+|---|---|---|
+| [Bun](https://bun.sh) ≥ 1.1 | runtime + package manager for everything | `curl -fsSL https://bun.sh/install \| bash` |
+| Docker | local Postgres | [OrbStack](https://orbstack.dev) or Docker Desktop |
+| [imsg](https://imsg.sh) | the iMessage relay binary | `brew install steipete/tap/imsg` |
+| OpenAI API key | message interpretation (**required** — API refuses to start without it) | [platform.openai.com](https://platform.openai.com/api-keys) |
+| Rust toolchain | only for the native Tauri desktop build | `curl https://sh.rustup.rs \| sh` |
+
+Optional: Google OAuth credentials (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`) enable "Sign in with Google" and Google Calendar sync. Leave them empty and everything else still works (email/password auth, internal calendar).
+
+## Local setup
 
 ```sh
-npm install                     # root tooling (supabase CLI)
-npm run db:start                # local Supabase (Docker)
-npm run db:reset                # apply migration
-npm run bootstrap               # create owner + agent users
+git clone <this repo> && cd fambot
+bun install
 
-cd web && npm install && cp .env.example .env.local   # fill anon key
-npm run dev                     # portal + MCP at http://localhost:3000
+# 1. Postgres in Docker (port 5433 to avoid clashing with a system Postgres)
+docker run -d --name fambot-pg -p 5433:5432 \
+  -e POSTGRES_PASSWORD=fambot -e POSTGRES_DB=fambot postgres:17-alpine
 
-cd ../bridge && npm install && cp .env.example .env   # fill anon key + agent
-npm run dev                     # the always-on bridge
+# 2. Environment
+cp apps/api/.env.example apps/api/.env       # then paste your OPENAI_API_KEY
+cp apps/bridge/.env.example apps/bridge/.env # defaults work for local dev
+
+# 3. Create the schema
+bun run db:push
+
+# 4. Run API (8787) + worker + web app (5173)
+bun dev
 ```
 
-Verify without touching iMessage at all:
+Open http://localhost:5173, create an account (email/password), name your household, and you're in. Talk to Fambot in the **Chat** tab:
+
+> remind me tomorrow at 8am to pack the kids' lunches
+> make sure the trash goes out tonight
+> add dinner with Jess Friday at 7 to the calendar
+> what's on this week?
+
+### Native desktop window (optional)
 
 ```sh
-npm run smoke:mcp               # agent-perspective MCP round trip
-npm test                        # bridge unit tests (fakes only)
+cd apps/desktop && bunx tauri dev    # needs the Rust toolchain
 ```
 
-## The MCP surface
+## iMessage bridge
 
-15 tools: `get_context`, `setup_household`, `add_member`, `list_members`, `map_channel`, `create_task`, `list_tasks`, `update_task`, `create_event`, `list_events`, `update_event`, `delete_event`, `create_reminder`, `list_reminders`, `cancel_reminder`.
+The bridge is a dumb relay on your Mac: it tails Messages via `imsg rpc`, POSTs every relevant text to the API, and holds a WebSocket over which the API pushes outbound sends (replies, reminder fires, task nudges).
 
-Any MCP client can use them — point it at `http://localhost:3000/mcp` with an `Authorization: Bearer <supabase-jwt>` header. This is also how you'd plug in a *different* messaging channel later: the channel just needs to get an agent invoked with tools.
+**Permissions (one-time):** the terminal app running the bridge needs
+- **Full Disk Access** (to read the Messages database) — System Settings → Privacy & Security → Full Disk Access
+- **Automation → Messages** (to send) — approve the prompt on first send
 
-## Schema
+**Start it:**
 
-Six tables: `households`, `members`, `channels` (iMessage chat ↔ household), `tasks`, `events`, `reminders`. RLS everywhere; household bootstrap and email-based member linking go through two security-definer RPCs (`setup_household`, `add_member_with_email`).
+```sh
+bun dev:bridge
+```
+
+**Link your iMessage identity.** The API only routes texts whose sender matches a household member's iMessage handle. In the app: **Settings → household members → add member with iMessage handle**, or when you invite family members include their phone/email handle. Unknown senders are ignored (logged by the API).
+
+**Testing from your own Apple ID:** messages you send show up as `is_from_me`, which the `production` profile skips (that's the bot echo filter). For solo testing set in `apps/bridge/.env`:
+
+```
+FAMBOT_PROFILE=local-dev
+```
+
+and give your member the iMessage handle `me`. Un-prefixed self-messages are then treated as user input. With `local-dev`, texts from *other* people work too — their handle is their phone/email as usual.
+
+`apps/bridge/.env` reference:
+
+| Var | Default | Meaning |
+|---|---|---|
+| `API_URL` | `http://localhost:8787` | where the API lives |
+| `BRIDGE_TOKEN` | `dev-bridge-token` | must match the API's `BRIDGE_TOKEN` |
+| `IMSG_BIN` | `imsg` | path to the imsg binary |
+| `BOT_MESSAGE_PREFIX` | `Fambot says: 🤖✨` | prefix on outbound sends (also the echo filter) |
+| `FAMBOT_PROFILE` | `production` | `local-dev` = treat un-prefixed self-messages as input |
+| `STATE_PATH` | `./data/state.json` | replay cursor + sent-message GUIDs |
+
+## Environment reference (`apps/api/.env`)
+
+| Var | Required | Meaning |
+|---|---|---|
+| `DATABASE_URL` | ✔ | Postgres connection string |
+| `OPENAI_API_KEY` | ✔ | interpretation model key |
+| `OPENAI_MODEL` | | default `gpt-5-mini` |
+| `BRIDGE_TOKEN` | ✔ | shared secret with the Mac bridge |
+| `BETTER_AUTH_SECRET` | ✔ | session signing (change in prod) |
+| `TOKEN_ENCRYPTION_KEY` | ✔ | AES-GCM key for stored Google tokens |
+| `API_BASE_URL` / `APP_URL` | ✔ | own origin / web app origin (CORS + OAuth redirects) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | | enables Google sign-in + Calendar |
+
+## Tests & typecheck
+
+```sh
+bun test           # unit tests across all workspaces
+bun run typecheck  # tsc --noEmit in every workspace
+```
+
+## Deploy
+
+- **Postgres**: [Neon](https://neon.tech) — put the connection string in `DATABASE_URL`.
+- **API + worker**: [Fly.io](https://fly.io) — one app, two processes (`fly.toml` + `Dockerfile` are ready):
+  ```sh
+  fly launch --no-deploy
+  fly secrets set DATABASE_URL=... OPENAI_API_KEY=... BRIDGE_TOKEN=... \
+    BETTER_AUTH_SECRET=... TOKEN_ENCRYPTION_KEY=... \
+    API_BASE_URL=https://<app>.fly.dev APP_URL=https://<vercel-domain>
+  fly deploy
+  ```
+- **Web app**: Vercel — deploy `apps/desktop` (`vercel.json` included) with `VITE_API_URL` pointing at Fly.
+- **Bridge**: runs on your Mac; `deploy/launchd/app.fambot.bridge.plist` keeps it alive as a launchd agent.

@@ -71,7 +71,7 @@ app.get(
 // Session-protected application API
 app.route("/api", api);
 
-console.log(`[api] listening on :${env.PORT} (${env.OPENAI_API_KEY ? "openai" : "fake ai"} mode)`);
+console.log(`[api] listening on :${env.PORT} (model: ${env.OPENAI_MODEL ?? "gpt-5-mini"})`);
 
 export default {
   port: env.PORT,

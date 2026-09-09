@@ -1,7 +1,7 @@
 /**
  * Local dev orchestrator: API (8787) + worker + Vite (5173) in one command.
  * The bridge runs separately (`bun dev:bridge`) since it needs macOS
- * Full Disk Access for chat.db, or a fake imsg binary for demos.
+ * Full Disk Access to read the Messages database.
  */
 import { spawn } from "node:child_process";
 
