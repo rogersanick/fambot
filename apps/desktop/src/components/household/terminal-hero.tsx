@@ -1,6 +1,7 @@
-import { AsciiMascot } from "@/components/ascii/ascii-mascot";
+import { useState } from "react";
+import { RobotMascot } from "@/components/robot/mascot";
 import { Typewriter } from "@/components/ascii/typewriter";
-import { FAMBOT_BANNER } from "@/components/ascii/banner";
+import { FambotLogo } from "@/components/robot/logo";
 
 type TerminalHeroProps = {
   /** Boot-sequence lines, typed one by one. */
@@ -12,18 +13,16 @@ type TerminalHeroProps = {
  * boots up with the household's live status.
  */
 export function TerminalHero({ lines }: TerminalHeroProps) {
+  // This is a boot snapshot, not a live dashboard. Keeping the first set of
+  // lines prevents CRUD/query invalidations from replaying the typewriter.
+  const [bootLines] = useState(lines);
+
   return (
     <section className="bg-terminal border-terminal-border animate-fade-up relative overflow-hidden rounded-xl border p-4 shadow-sm sm:p-5">
-      <AsciiMascot className="text-terminal-dim absolute top-3 right-4 hidden text-[10px] sm:block" />
-      <pre
-        className="text-terminal-foreground text-[7px] leading-[1.15] font-bold select-none sm:text-[10px]"
-        aria-label="FamBot"
-        role="img"
-      >
-        {FAMBOT_BANNER}
-      </pre>
+      <RobotMascot className="text-terminal-dim absolute top-3 right-4 hidden sm:block" />
+      <FambotLogo className="text-terminal-foreground h-8 sm:h-11" />
       <Typewriter
-        lines={lines}
+        lines={bootLines}
         className="text-terminal-dim mt-3 text-xs sm:text-sm"
         cursorClassName="text-terminal-foreground"
       />

@@ -1,10 +1,9 @@
 /**
- * Normalized message model. Every input channel (imessage, app chat, future
- * SMS) is converted into this shape before anything downstream sees it.
- * Nothing below the messaging adapters may depend on channel-specific
- * payloads.
+ * Normalized message model. Every input channel (imessage, app chat, sms) is
+ * converted into this shape before anything downstream sees it. Nothing below
+ * the messaging adapters may depend on channel-specific payloads.
  */
-export type Channel = "imessage" | "app_chat";
+export type Channel = "imessage" | "app_chat" | "sms";
 
 export type InboundMessage = {
   /** Stable id for idempotency: `${channel}:${externalMessageId}` or a uuid for app chat. */
@@ -19,6 +18,8 @@ export type InboundMessage = {
     externalId: string;
     displayName?: string;
   };
+  /** E.164 participants supplied by a native group-message webhook. */
+  participantExternalIds?: string[];
   text: string;
   sentAt: string; // ISO timestamp
   context: {

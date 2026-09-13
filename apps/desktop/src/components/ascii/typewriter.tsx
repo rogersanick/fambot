@@ -51,13 +51,14 @@ export function Typewriter({
     };
   }, [lines, speed, startDelay, linePause, total]);
 
+  const done = count >= total;
   const rendered: React.ReactNode[] = [];
   let remaining = count;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (remaining <= 0) break;
     const visible = line.slice(0, remaining);
-    const isActive = remaining <= line.length;
+    const isActive = remaining <= line.length && !done;
     rendered.push(
       <div key={i}>
         {visible}
@@ -70,16 +71,10 @@ export function Typewriter({
     );
     remaining -= line.length;
   }
-  const done = count >= total;
 
   return (
     <div className={cn("font-mono whitespace-pre-wrap", className)}>
       {rendered}
-      {done && (
-        <span className={cn("animate-caret-blink inline-block", cursorClassName)} aria-hidden>
-          &#9608;
-        </span>
-      )}
     </div>
   );
 }

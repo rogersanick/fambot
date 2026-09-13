@@ -77,6 +77,30 @@ export async function saveConnection(
     });
 }
 
+export type CreateGoogleEventInput = {
+  title: string;
+  startsAt: Date;
+  endsAt: Date | null;
+  location: string | null;
+  timezone: string;
+  /** RFC-5545 rule; the whole series is created on Google, not occurrences. */
+  rrule: string | null;
+};
+
+/** Pure payload builder (exported for tests). */
+export function buildGoogleEventPayload(input: CreateGoogleEventInput): Record<string, unknown> {
+  const end = input.endsAt ?? new Date(input.startsAt.getTime() + 3_600_000);
+  return {
+    summary: input.title,
+    location: input.location ?? undefined,
+    start: { dateTime: input.startsAt.toISOString(), timeZone: input.timezone },
+    end: { dateTime: end.toISOString(), timeZone: input.timezone },
+    ...(input.rrule
+      ? { recurrence: [`RRULE:${input.rrule.replace(/^RRULE:/i, "")}`] }
+      : {}),
+  };
+}
+
 export class GoogleCalendarProvider {
   constructor(
     private db: Db,
@@ -138,22 +162,10 @@ export class GoogleCalendarProvider {
     });
   }
 
-  async createEvent(input: {
-    title: string;
-    startsAt: Date;
-    endsAt: Date | null;
-    location: string | null;
-    timezone: string;
-  }): Promise<{ externalId: string; htmlLink?: string }> {
-    const end = input.endsAt ?? new Date(input.startsAt.getTime() + 3_600_000);
+  async createEvent(input: CreateGoogleEventInput): Promise<{ externalId: string; htmlLink?: string }> {
     const res = await this.api(`/calendars/primary/events`, {
       method: "POST",
-      body: JSON.stringify({
-        summary: input.title,
-        location: input.location ?? undefined,
-        start: { dateTime: input.startsAt.toISOString(), timeZone: input.timezone },
-        end: { dateTime: end.toISOString(), timeZone: input.timezone },
-      }),
+      body: JSON.stringify(buildGoogleEventPayload(input)),
     });
     if (!res.ok) throw new Error(`google createEvent failed: ${res.status} ${await res.text()}`);
     const data = (await res.json()) as { id: string; htmlLink?: string };

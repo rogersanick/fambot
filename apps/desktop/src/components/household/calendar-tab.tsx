@@ -2,6 +2,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SubmitButton } from "@/components/submit-button";
+import { DateTimePicker } from "@/components/date-time-picker";
+import { RecurrencePicker } from "@/components/recurrence-picker";
 import { api, localToIso } from "@/lib/api";
 import { useAction } from "./use-actions";
 import { fmtTime, localDate } from "@/lib/format";
@@ -24,6 +26,7 @@ export function CalendarTab({
     day: localDate(new Date(e.starts_at), tz),
     time: fmtTime(e.starts_at, tz),
     location: e.location,
+    recurrence: e.recurrence,
   }));
 
   return (
@@ -48,6 +51,7 @@ export function CalendarTab({
                     startsAt,
                     endsAt: localToIso(String(fd.get("ends_at") ?? ""), tz),
                     location: String(fd.get("location") ?? "").trim() || null,
+                    rrule: String(fd.get("rrule") ?? "") || null,
                   })
                 )
                 .then((ok) => ok && form.reset());
@@ -57,13 +61,19 @@ export function CalendarTab({
             <Input name="title" placeholder="Soccer practice" required className="sm:col-span-2" />
             <div className="grid gap-1">
               <Label className="text-muted-foreground text-xs">Starts</Label>
-              <Input name="starts_at" type="datetime-local" required />
+              <DateTimePicker name="starts_at" timeZone={tz} required className="sm:w-full" />
             </div>
             <div className="grid gap-1">
               <Label className="text-muted-foreground text-xs">Ends (optional)</Label>
-              <Input name="ends_at" type="datetime-local" />
+              <DateTimePicker name="ends_at" timeZone={tz} className="sm:w-full" />
             </div>
-            <Input name="location" placeholder="Location (optional)" />
+            <div className="grid gap-1">
+              <Label className="text-muted-foreground text-xs">Repeats</Label>
+              <RecurrencePicker name="rrule" className="sm:w-full" />
+            </div>
+            <div className="grid content-end gap-1">
+              <Input name="location" placeholder="Location (optional)" />
+            </div>
             <SubmitButton pending={create.pending}>Add event</SubmitButton>
           </form>
         </CardContent>
@@ -74,7 +84,7 @@ export function CalendarTab({
           <CardTitle className="font-serif text-lg">This month</CardTitle>
         </CardHeader>
         <CardContent>
-          <CalendarView householdId={householdId} events={calendarEvents} todayKey={localDate(new Date(), tz)} />
+          <CalendarView householdId={householdId} tz={tz} events={calendarEvents} todayKey={localDate(new Date(), tz)} />
         </CardContent>
       </Card>
     </div>

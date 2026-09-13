@@ -1,12 +1,18 @@
 import { createDb } from "@fambot/database";
 import { createServices } from "@fambot/domain";
-import { createAIProvider } from "@fambot/ai";
-import { AppChatChannel, ChannelRouter, ImsgChannel } from "@fambot/messaging";
-import { env } from "./env";
+import { createAIRuntime } from "@fambot/ai";
+import {
+  AppChatChannel,
+  ChannelRouter,
+  ImsgChannel,
+  NotificationDispatcher,
+  TelnyxSmsChannel,
+} from "@fambot/messaging";
+import { env, telnyxEnabled } from "./env";
 
 export const db = createDb(env.DATABASE_URL);
 export const services = createServices(db);
-export const ai = createAIProvider({
+export const ai = createAIRuntime({
   OPENAI_API_KEY: env.OPENAI_API_KEY,
   OPENAI_MODEL: env.OPENAI_MODEL,
   OPENAI_BASE_URL: env.OPENAI_BASE_URL,
@@ -20,4 +26,17 @@ export function setOutboxNotifier(fn: () => void) {
 
 export const appChatChannel = new AppChatChannel(db);
 export const imsgChannel = new ImsgChannel(db, () => outboxNotifier?.());
-export const channelRouter = new ChannelRouter(db, appChatChannel, imsgChannel);
+export const telnyxChannel = telnyxEnabled
+  ? new TelnyxSmsChannel(db, {
+      apiKey: env.TELNYX_API_KEY!,
+      fromNumber: env.TELNYX_FROM_NUMBER!,
+      messagingProfileId: env.TELNYX_MESSAGING_PROFILE_ID,
+    })
+  : null;
+export const channelRouter = new ChannelRouter(db, appChatChannel, imsgChannel, telnyxChannel);
+
+/** Broadcast dispatcher for scheduled notifications (worker + API share it). */
+export const notificationDispatcher = new NotificationDispatcher(db, {
+  telnyx: telnyxChannel,
+  notifyImsgOutbox: () => outboxNotifier?.(),
+});

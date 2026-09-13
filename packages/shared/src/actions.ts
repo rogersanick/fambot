@@ -61,8 +61,15 @@ export const UpdateTaskSchema = z.object({
   type: z.literal("update_task"),
   task_ref: z.string().min(1),
   new_title: z.string().nullable(),
+  /** Delays THIS occurrence only; future occurrences keep their schedule. */
   new_due_at: localDateTime.nullable(),
   new_list_name: z.string().nullable(),
+  /** Change/set the recurrence (applies to the whole series). */
+  new_rrule: z.string().nullable(),
+  /** Change how often Fambot nags about this task until it's done. */
+  new_nag_interval_minutes: z.number().int().min(5).max(24 * 60).nullable(),
+  /** True = stop future occurrences (keeps the current one). */
+  stop_recurrence: z.boolean().nullable(),
 });
 
 export const CompleteTaskSchema = z.object({
@@ -74,11 +81,15 @@ export const CompleteTaskSchema = z.object({
 export const CancelTaskSchema = z.object({
   type: z.literal("cancel_task"),
   task_ref: z.string().min(1),
+  /** True = cancel the whole recurring series, not just this occurrence. */
+  cancel_series: z.boolean().nullable(),
 });
 
 export const CreateListSchema = z.object({
   type: z.literal("create_list"),
   name: z.string().min(1),
+  /** Optional initial checklist entries. Null creates an empty list. */
+  items: z.array(z.string().min(1)).max(50).nullable(),
 });
 
 export const RenameListSchema = z.object({
@@ -92,6 +103,37 @@ export const DeleteListSchema = z.object({
   name: z.string().min(1),
 });
 
+export const AddListItemsSchema = z.object({
+  type: z.literal("add_list_items"),
+  list_name: z.string().min(1),
+  items: z.array(z.string().min(1)).min(1).max(50),
+});
+
+export const UpdateListItemSchema = z.object({
+  type: z.literal("update_list_item"),
+  list_name: z.string().min(1),
+  item_ref: z.string().min(1),
+  new_title: z.string().min(1),
+});
+
+export const SetListItemCompletedSchema = z.object({
+  type: z.literal("set_list_item_completed"),
+  list_name: z.string().min(1),
+  item_ref: z.string().min(1),
+  completed: z.boolean(),
+});
+
+export const DeleteListItemSchema = z.object({
+  type: z.literal("delete_list_item"),
+  list_name: z.string().min(1),
+  item_ref: z.string().min(1),
+});
+
+export const GetListSchema = z.object({
+  type: z.literal("get_list"),
+  list_name: z.string().min(1),
+});
+
 export const CreateEventSchema = z.object({
   type: z.literal("create_event"),
   title: z.string().min(1),
@@ -99,6 +141,8 @@ export const CreateEventSchema = z.object({
   end_at: localDateTime.nullable(),
   location: z.string().nullable(),
   attendee_names: z.array(z.string()).nullable(),
+  /** RFC-5545 recurrence rule; start_at is the first occurrence. Null = one-off. */
+  rrule: z.string().nullable(),
 });
 
 export const SearchScheduleSchema = z.object({
@@ -107,6 +151,24 @@ export const SearchScheduleSchema = z.object({
   start_at: localDateTime.nullable(),
   end_at: localDateTime.nullable(),
   query: z.string().nullable(),
+});
+
+/** What comments can attach to. Reminders are fire-and-forget — no threads. */
+export const CommentSubjectTypeSchema = z.enum(["task", "event", "list"]);
+
+export const AddCommentSchema = z.object({
+  type: z.literal("add_comment"),
+  subject_type: CommentSubjectTypeSchema,
+  /** Words from the item's existing title/name, used for lookup. */
+  subject_ref: z.string().min(1),
+  /** The status update / note to record on the item. */
+  text: z.string().min(1),
+});
+
+export const GetCommentStatusSchema = z.object({
+  type: z.literal("get_comment_status"),
+  subject_type: CommentSubjectTypeSchema,
+  subject_ref: z.string().min(1),
 });
 
 export const ClarifySchema = z.object({
@@ -130,8 +192,15 @@ export const ProposedActionSchema = z.discriminatedUnion("type", [
   CreateListSchema,
   RenameListSchema,
   DeleteListSchema,
+  AddListItemsSchema,
+  UpdateListItemSchema,
+  SetListItemCompletedSchema,
+  DeleteListItemSchema,
+  GetListSchema,
   CreateEventSchema,
   SearchScheduleSchema,
+  AddCommentSchema,
+  GetCommentStatusSchema,
   ClarifySchema,
   ChatReplySchema,
 ]);
@@ -147,3 +216,6 @@ export type CreateReminderAction = z.infer<typeof CreateReminderSchema>;
 export type CreateTaskAction = z.infer<typeof CreateTaskSchema>;
 export type CreateEventAction = z.infer<typeof CreateEventSchema>;
 export type SearchScheduleAction = z.infer<typeof SearchScheduleSchema>;
+export type CommentSubjectType = z.infer<typeof CommentSubjectTypeSchema>;
+export type AddCommentAction = z.infer<typeof AddCommentSchema>;
+export type GetCommentStatusAction = z.infer<typeof GetCommentStatusSchema>;

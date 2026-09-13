@@ -6,13 +6,14 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { TerminalHero } from "@/components/household/terminal-hero";
 import { OverviewTab, type TimelineItem, type WeekDay } from "@/components/household/overview-tab";
 import { TodosTab } from "@/components/household/todos-tab";
+import { ListsTab } from "@/components/household/lists-tab";
 import { CalendarTab } from "@/components/household/calendar-tab";
 import { RemindersTab } from "@/components/household/reminders-tab";
 import { SettingsTab } from "@/components/household/settings-tab";
 import { ChatTab } from "@/components/household/chat-tab";
 import { ConnectionsTab } from "@/components/household/connections-tab";
 import type { TaskChartDatum } from "@/components/household/task-chart";
-import { AsciiSpinner } from "@/components/ascii/ascii-spinner";
+import { RobotSpinner } from "@/components/robot/spinner";
 import { fmtWhen, isOverdue, localDate } from "@/lib/format";
 import { api } from "@/lib/api";
 import { signOut } from "@/lib/auth";
@@ -52,8 +53,12 @@ export function Dashboard({ householdId }: { householdId: string }) {
   const computed = useMemo(() => {
     if (!bundle.data || !tasksQ.data || !eventsQ.data || !remindersQ.data) return null;
     const tz = bundle.data.household.timezone;
-    const members = toMemberRows(bundle.data.members, bundle.data.identities);
-    const allTasks = toTaskRows(tasksQ.data.tasks, bundle.data.members);
+    const members = toMemberRows(
+      bundle.data.members,
+      bundle.data.identities,
+      bundle.data.invites
+    );
+    const allTasks = toTaskRows(tasksQ.data.tasks, bundle.data.members, tasksQ.data.series);
     const allEvents = toEventRows(eventsQ.data.events);
     const allReminders = toReminderRows(remindersQ.data.reminders);
     const lists = tasksQ.data.lists;
@@ -112,6 +117,7 @@ export function Dashboard({ householdId }: { householdId: string }) {
       .sort((a, b) => b.open + b.done - (a.open + a.done));
 
     const weekEnd = now.getTime() + 7 * DAY_MS;
+    const weekDays = new Set(weekKeys);
     const timeline: TimelineItem[] = [
       ...allEvents
         .filter((e) => {
@@ -124,6 +130,7 @@ export function Dashboard({ householdId }: { householdId: string }) {
           title: e.title,
           when: fmtWhen(e.starts_at, tz, now),
           detail: e.location ?? undefined,
+          day: localDate(new Date(e.starts_at), tz),
           iso: e.starts_at,
         })),
       ...pendingReminders
@@ -137,7 +144,21 @@ export function Dashboard({ householdId }: { householdId: string }) {
           title: r.message,
           when: fmtWhen(r.fire_at, tz, now),
           detail: undefined,
+          day: localDate(new Date(r.fire_at), tz),
           iso: r.fire_at,
+        })),
+      // Due todos are what the week-ahead heat counts, so they belong in the
+      // timeline too (day-based: an overdue-today todo still shows for today).
+      ...openTasks
+        .filter((t) => t.due_at && weekDays.has(localDate(new Date(t.due_at), tz)))
+        .map((t) => ({
+          id: t.id,
+          kind: "todo" as const,
+          title: t.title,
+          when: fmtWhen(t.due_at!, tz, now),
+          detail: t.assignee?.display_name,
+          day: localDate(new Date(t.due_at!), tz),
+          iso: t.due_at!,
         })),
     ]
       .sort((a, b) => a.iso.localeCompare(b.iso))
@@ -145,24 +166,11 @@ export function Dashboard({ householdId }: { householdId: string }) {
 
     const eventsThisWeek = eventSpark.reduce((a, b) => a + b, 0);
 
-    // Terminal boot sequence
-    const nextEvent = allEvents.find((e) => new Date(e.starts_at).getTime() >= now.getTime());
-    const nextReminder = [...pendingReminders]
-      .filter((r) => new Date(r.fire_at).getTime() >= now.getTime())
-      .sort((a, b) => a.fire_at.localeCompare(b.fire_at))[0];
-    const bridgeOk = bundle.data.bridge.connected;
+    // Terminal boot sequence — kept short; the dashboard below has the details.
     const bootLines = [
       "> fambot v2.0 — household os",
       `> household: ${bundle.data.household.name} · ${tz}`,
       `> ${openTasks.length} open todo${openTasks.length === 1 ? "" : "s"}${overdueCount > 0 ? ` · ${overdueCount} overdue` : ""}`,
-      nextEvent
-        ? `> next event: ${nextEvent.title} — ${fmtWhen(nextEvent.starts_at, tz, now)}`
-        : "> next event: none scheduled",
-      nextReminder
-        ? `> next reminder: ${nextReminder.message} — ${fmtWhen(nextReminder.fire_at, tz, now)}`
-        : "> next reminder: none pending",
-      bridgeOk ? "> imsg bridge: connected ✓" : "> imsg bridge: offline — app chat only",
-      "> all systems nominal ✓",
     ];
 
     return {
@@ -193,7 +201,7 @@ export function Dashboard({ householdId }: { householdId: string }) {
     return (
       <main className="flex min-h-svh items-center justify-center">
         <div className="text-muted-foreground flex items-center gap-2 font-mono text-sm">
-          <AsciiSpinner /> loading household…
+          <RobotSpinner /> loading household…
         </div>
       </main>
     );
@@ -225,6 +233,7 @@ export function Dashboard({ householdId }: { householdId: string }) {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="chat">Chat</TabsTrigger>
           <TabsTrigger value="todos">Todos</TabsTrigger>
+          <TabsTrigger value="lists">Lists</TabsTrigger>
           <TabsTrigger value="calendar">Calendar</TabsTrigger>
           <TabsTrigger value="reminders">Reminders</TabsTrigger>
           <TabsTrigger value="connections">Connections</TabsTrigger>
@@ -256,6 +265,10 @@ export function Dashboard({ householdId }: { householdId: string }) {
           />
         </TabsContent>
 
+        <TabsContent value="lists">
+          <ListsTab householdId={householdId} tz={computed.tz} lists={computed.lists} tasks={computed.allTasks} />
+        </TabsContent>
+
         <TabsContent value="calendar">
           <CalendarTab householdId={householdId} tz={computed.tz} events={computed.allEvents} />
         </TabsContent>
@@ -265,7 +278,7 @@ export function Dashboard({ householdId }: { householdId: string }) {
         </TabsContent>
 
         <TabsContent value="connections">
-          <ConnectionsTab bridge={bridge} />
+          <ConnectionsTab householdId={householdId} isOwner={me.role === "owner"} members={computed.members} />
         </TabsContent>
 
         <TabsContent value="settings">
@@ -273,8 +286,8 @@ export function Dashboard({ householdId }: { householdId: string }) {
             householdId={householdId}
             householdName={household.name}
             tz={computed.tz}
+            meId={me.id}
             members={toMemberRows(rawMembers, identities)}
-            bridge={bridge}
           />
         </TabsContent>
       </Tabs>

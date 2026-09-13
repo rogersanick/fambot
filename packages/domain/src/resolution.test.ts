@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   nextOccurrence,
+  occurrencesBetween,
   resolveLocalDateTime,
   resolvePersonName,
   ResolutionError,
@@ -48,6 +49,67 @@ describe("nextOccurrence", () => {
     const anchor = resolveLocalDateTime("2026-09-08T09:00:00", NY);
     const next = nextOccurrence("RRULE:FREQ=DAILY", NY, anchor, anchor);
     expect(toLocalIso(next!, NY)).toBe("2026-09-09T09:00:00");
+  });
+});
+
+describe("occurrencesBetween", () => {
+  test("perpetual daily rule expands within the range only", () => {
+    const anchor = resolveLocalDateTime("2026-09-01T09:00:00", NY);
+    const start = resolveLocalDateTime("2026-09-10T00:00:00", NY);
+    const end = resolveLocalDateTime("2026-09-12T23:59:00", NY);
+    const got = occurrencesBetween("FREQ=DAILY", NY, anchor, start, end);
+    expect(got.map((d) => toLocalIso(d, NY))).toEqual([
+      "2026-09-10T09:00:00",
+      "2026-09-11T09:00:00",
+      "2026-09-12T09:00:00",
+    ]);
+  });
+
+  test("COUNT limits the run", () => {
+    const anchor = resolveLocalDateTime("2026-09-01T09:00:00", NY);
+    const start = resolveLocalDateTime("2026-08-01T00:00:00", NY);
+    const end = resolveLocalDateTime("2026-10-01T00:00:00", NY);
+    const got = occurrencesBetween("FREQ=DAILY;COUNT=3", NY, anchor, start, end);
+    expect(got).toHaveLength(3);
+    expect(toLocalIso(got[2]!, NY)).toBe("2026-09-03T09:00:00");
+  });
+
+  test("UNTIL bounds the run", () => {
+    const anchor = resolveLocalDateTime("2026-09-01T09:00:00", NY);
+    const start = resolveLocalDateTime("2026-08-01T00:00:00", NY);
+    const end = resolveLocalDateTime("2026-12-01T00:00:00", NY);
+    const got = occurrencesBetween("FREQ=WEEKLY;UNTIL=20260930T235959", NY, anchor, start, end);
+    expect(got.map((d) => toLocalIso(d, NY))).toEqual([
+      "2026-09-01T09:00:00",
+      "2026-09-08T09:00:00",
+      "2026-09-15T09:00:00",
+      "2026-09-22T09:00:00",
+      "2026-09-29T09:00:00",
+    ]);
+  });
+
+  test("keeps local wall-clock across the DST boundary", () => {
+    // DST ends Nov 1 2026 in America/New_York.
+    const anchor = resolveLocalDateTime("2026-10-30T08:00:00", NY);
+    const start = anchor;
+    const end = resolveLocalDateTime("2026-11-02T23:00:00", NY);
+    const got = occurrencesBetween("FREQ=DAILY", NY, anchor, start, end);
+    expect(got.map((d) => toLocalIso(d, NY))).toEqual([
+      "2026-10-30T08:00:00",
+      "2026-10-31T08:00:00",
+      "2026-11-01T08:00:00",
+      "2026-11-02T08:00:00",
+    ]);
+    // Offsets differ around the transition: EDT (UTC-4) → EST (UTC-5).
+    expect(got[1]!.toISOString()).toBe("2026-10-31T12:00:00.000Z");
+    expect(got[2]!.toISOString()).toBe("2026-11-01T13:00:00.000Z");
+  });
+
+  test("respects the safety limit", () => {
+    const anchor = resolveLocalDateTime("2026-01-01T09:00:00", NY);
+    const start = anchor;
+    const end = resolveLocalDateTime("2027-01-01T09:00:00", NY);
+    expect(occurrencesBetween("FREQ=DAILY", NY, anchor, start, end, 10)).toHaveLength(10);
   });
 });
 

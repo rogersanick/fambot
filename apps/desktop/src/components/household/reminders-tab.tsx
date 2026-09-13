@@ -4,7 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { SubmitButton } from "@/components/submit-button";
-import { AsciiEmptyState } from "@/components/ascii/ascii-empty-state";
+import { DateTimePicker } from "@/components/date-time-picker";
+import { RobotEmptyState } from "@/components/robot/scenes";
 import { api, localToIso } from "@/lib/api";
 import { useAction } from "./use-actions";
 import { fmtWhen } from "@/lib/format";
@@ -31,8 +32,8 @@ export function RemindersTab({
         <CardHeader>
           <CardTitle className="font-serif text-lg">Schedule a reminder</CardTitle>
           <CardDescription>
-            Delivered in-app, or over iMessage when the bridge is connected. You can also just tell
-            Fambot in the Chat tab.
+            Delivered by text message (and iMessage when enabled) — manage channels in Connections.
+            You can also tell Fambot in Chat.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -49,7 +50,7 @@ export function RemindersTab({
             className="grid gap-3 sm:grid-cols-[1fr_auto_auto]"
           >
             <Input name="message" placeholder="Take out the trash tonight!" required />
-            <Input name="fire_at" type="datetime-local" required className="sm:w-52" />
+            <DateTimePicker name="fire_at" timeZone={tz} placeholder="When should it fire?" required />
             <SubmitButton pending={create.pending}>Schedule</SubmitButton>
           </form>
         </CardContent>
@@ -60,7 +61,7 @@ export function RemindersTab({
           <CardTitle className="font-serif text-lg">Pending ({pending.length})</CardTitle>
         </CardHeader>
         <CardContent className="grid gap-3">
-          {pending.length === 0 && <AsciiEmptyState variant="bell" caption="No reminders pending. Silence is golden." />}
+          {pending.length === 0 && <RobotEmptyState variant="fishing" caption="No reminders pending. Silence is golden." />}
           {pending.length > 0 && (
             <div className="stagger-children border-border ml-2 grid border-l-2">
               {pending.map((r, i) => (

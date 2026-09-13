@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import {
   actionExecutions,
   aiRuns,
@@ -11,10 +11,15 @@ import {
 } from "@fambot/database";
 import type { InboundMessage, ConversationTurn } from "@fambot/shared";
 import { InvocationMatcher, shouldInvokeAssistant } from "@fambot/shared";
-import { executeActions, toLocalIso, type ExecutionContext } from "@fambot/domain";
-import { GoogleCalendarProvider } from "@fambot/calendar";
-import { ai, channelRouter, db, services } from "./context";
-import { env, googleEnabled } from "./env";
+import { toLocalIso } from "@fambot/domain";
+import { ProgressReporter } from "@fambot/ai";
+import {
+  getOrCreateSmsConversation,
+  getOrCreateSmsGroupConversation,
+} from "@fambot/messaging";
+import { ai, channelRouter, db } from "./context";
+import { env } from "./env";
+import { mintMcpToken } from "./mcp-auth";
 
 export type PipelineResult = {
   conversationId: string;
@@ -80,91 +85,72 @@ export async function processInbound(inbound: InboundMessage): Promise<PipelineR
   const actor = senderMember ?? householdMembers.find((m) => m.role === "owner") ?? householdMembers[0];
   if (!actor) return { conversationId: conversation.id, persistedMessageId: messageId, invoked: false, reply: null };
 
-  // 5. AI interpretation (the model only proposes; it executes nothing)
-  const interpretation = await ai.interpret({
-    nowLocal: toLocalIso(new Date(), household.timezone),
-    timezone: household.timezone,
-    senderName: actor.displayName,
-    participantNames: (participants.length ? participants : householdMembers).map((m) => m.displayName),
-    isGroup: inbound.context.isGroup,
-    recentTurns,
-    text: matcher.strip(inbound.text),
+  // 5. Agent loop over MCP tools. Progress + the final reply go back on
+  // the originating conversation (SMS → that SMS thread, chat → chat).
+  const requestId = crypto.randomUUID();
+  const token = await mintMcpToken({
+    memberId: actor.id,
+    householdId: household.id,
+    conversationId: conversation.id,
+    source: "agent",
+    requestId,
+  });
+  const progress = new ProgressReporter({
+    send: (text) =>
+      channelRouter.sendMessage({ conversationId: conversation.id, text, kind: "progress" }),
+  });
+  const result = await ai.runAgent({
+    mcp: {
+      url: `${env.API_BASE_URL.replace(/\/$/, "")}/mcp`,
+      headers: { authorization: `Bearer ${token}` },
+    },
+    input: {
+      nowLocal: toLocalIso(new Date(), household.timezone),
+      timezone: household.timezone,
+      senderName: actor.displayName,
+      participantNames: (participants.length ? participants : householdMembers).map((m) => m.displayName),
+      isGroup: inbound.context.isGroup,
+      recentTurns,
+      text: matcher.strip(inbound.text),
+    },
+    onToolStep: (step) => progress.onToolStep(step),
   });
 
   const [run] = await db
     .insert(aiRuns)
     .values({
       messageId,
-      provider: interpretation.meta.provider,
-      model: interpretation.meta.model,
-      inputTokens: interpretation.meta.inputTokens,
-      outputTokens: interpretation.meta.outputTokens,
-      latencyMs: interpretation.meta.latencyMs,
-      status: interpretation.meta.status,
-      error: interpretation.meta.error,
+      provider: result.meta.provider,
+      model: result.meta.model,
+      inputTokens: result.meta.inputTokens,
+      outputTokens: result.meta.outputTokens,
+      latencyMs: result.meta.latencyMs,
+      status: result.meta.status,
+      error: result.meta.error,
     })
     .returning({ id: aiRuns.id });
 
-  // 6. Authorization + resolution + execution (deterministic application code)
-  const externalCalendar =
-    googleEnabled && actor.userId
-      ? await GoogleCalendarProvider.forUser(
-          db,
-          {
-            clientId: env.GOOGLE_CLIENT_ID!,
-            clientSecret: env.GOOGLE_CLIENT_SECRET!,
-            redirectUri: `${env.API_BASE_URL}/api/integrations/google/callback`,
-            encryptionKey: env.TOKEN_ENCRYPTION_KEY,
-          },
-          actor.userId
-        )
-      : null;
-
-  const ctx: ExecutionContext = {
-    db,
-    services,
-    externalCalendar,
-    householdId: household.id,
-    timezone: household.timezone,
-    actor: {
-      memberId: actor.id,
-      householdId: household.id,
-      role: actor.role as "owner" | "member",
-      displayName: actor.displayName,
-    },
-    conversation: {
-      id: conversation.id,
-      kind: conversation.kind as "direct" | "group",
-      channel: conversation.channel as "imessage" | "app_chat",
-    },
-    participants,
-    householdMembers,
-  };
-
-  const outcome = await executeActions(ctx, interpretation.actions);
-
-  if (run) {
+  if (run && result.steps.length > 0) {
     await db.insert(actionExecutions).values(
-      outcome.executions.map((e) => ({
+      result.steps.map((step) => ({
         aiRunId: run.id,
-        actionType: e.actionType,
-        argumentsJson: e.args,
-        resultJson: e.result ?? null,
-        status: e.status,
+        actionType: step.toolName,
+        argumentsJson: step.args,
+        resultJson: { message: step.message, data: step.data },
+        status: step.status,
       }))
     );
   }
 
-  // 7. Respond through the originating channel
-  if (outcome.reply) {
-    await channelRouter.sendMessage({ conversationId: conversation.id, text: outcome.reply });
+  if (result.reply) {
+    await channelRouter.sendMessage({ conversationId: conversation.id, text: result.reply });
   }
 
   return {
     conversationId: conversation.id,
     persistedMessageId: messageId,
     invoked: true,
-    reply: outcome.reply || null,
+    reply: result.reply || null,
   };
 }
 
@@ -187,6 +173,71 @@ async function resolveConversation(inbound: InboundMessage) {
       .from(members)
       .where(eq(members.id, inbound.sender.externalId));
     return { conversation, household, senderMember: senderMember ?? null };
+  }
+
+  if (inbound.channel === "sms") {
+    // SMS: identify the household by sender. Group MMS additionally proves
+    // that every handset participant belongs to the same household.
+    // Unknown numbers are ignored — only household members can text Fambot.
+    const [identity] = await db
+      .select({ memberId: identities.memberId })
+      .from(identities)
+      .where(and(eq(identities.type, "phone"), eq(identities.value, inbound.sender.externalId)));
+    if (!identity) {
+      console.warn(`[pipeline] ignoring SMS from unknown number ${inbound.sender.externalId}`);
+      return null;
+    }
+    const [senderMember] = await db.select().from(members).where(eq(members.id, identity.memberId));
+    if (!senderMember) return null;
+    const [household] = await db
+      .select()
+      .from(households)
+      .where(eq(households.id, senderMember.householdId));
+    if (!household) return null;
+    if (inbound.context.isGroup) {
+      const participantPhones = new Set([
+        inbound.sender.externalId,
+        ...(inbound.participantExternalIds ?? []),
+      ]);
+      const householdPhones = await db
+        .select({ phone: identities.value })
+        .from(identities)
+        .innerJoin(members, eq(identities.memberId, members.id))
+        .where(
+          and(eq(identities.type, "phone"), eq(members.householdId, household.id))
+        );
+      const expected = new Set(householdPhones.map(({ phone }) => phone));
+      if (
+        participantPhones.size !== expected.size ||
+        [...participantPhones].some((phone) => !expected.has(phone))
+      ) {
+        console.warn("[pipeline] ignoring SMS group with unknown or missing household participants");
+        return null;
+      }
+      const conversationId = await getOrCreateSmsGroupConversation(db, household.id);
+      if (!conversationId) return null;
+      const [conversation] = await db
+        .select()
+        .from(conversations)
+        .where(eq(conversations.id, conversationId));
+      if (!conversation) return null;
+      return { conversation, household, senderMember };
+    }
+    console.log(
+      `[pipeline] SMS from ${inbound.sender.externalId} (${senderMember.displayName}) → ${household.name}`
+    );
+    const conversationId = await getOrCreateSmsConversation(db, {
+      householdId: household.id,
+      memberId: senderMember.id,
+      phone: inbound.sender.externalId,
+      displayName: senderMember.displayName,
+    });
+    const [conversation] = await db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, conversationId));
+    if (!conversation) return null;
+    return { conversation, household, senderMember };
   }
 
   // iMessage: find existing conversation by chat_guid
@@ -241,7 +292,7 @@ async function loadRecentTurns(
   const rows = await db
     .select()
     .from(messages)
-    .where(eq(messages.conversationId, conversationId))
+    .where(and(eq(messages.conversationId, conversationId), ne(messages.kind, "progress")))
     .orderBy(desc(messages.sentAt))
     .limit(15);
   const nameOf = new Map(householdMembers.map((m) => [m.id, m.displayName]));

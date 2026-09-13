@@ -55,6 +55,30 @@ export function nextOccurrence(
   return floatingToInstant(next, tz);
 }
 
+/**
+ * All occurrences within [rangeStart, rangeEnd] (inclusive) for a recurrence
+ * anchored at `anchor`, DST-safe like nextOccurrence. Capped at `limit` so a
+ * perpetual rule over a huge range can't blow up.
+ */
+export function occurrencesBetween(
+  rruleStr: string,
+  tz: string,
+  anchor: Date,
+  rangeStart: Date,
+  rangeEnd: Date,
+  limit = 100
+): Date[] {
+  const clean = rruleStr.replace(/^RRULE:/i, "");
+  const rule = new RRule({
+    ...RRule.parseString(clean),
+    dtstart: instantToFloating(anchor, tz),
+  });
+  return rule
+    .between(instantToFloating(rangeStart, tz), instantToFloating(rangeEnd, tz), true)
+    .slice(0, limit)
+    .map((d) => floatingToInstant(d, tz));
+}
+
 /** UTC instant → "floating" Date whose UTC fields equal the local wall clock in tz. */
 function instantToFloating(instant: Date, tz: string): Date {
   const dt = DateTime.fromJSDate(instant, { zone: tz });

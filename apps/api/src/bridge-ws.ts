@@ -1,5 +1,5 @@
 import { and, eq, lt, lte } from "drizzle-orm";
-import { outboxMessages } from "@fambot/database";
+import { deliveries, outboxMessages } from "@fambot/database";
 import { db, setOutboxNotifier } from "./context";
 
 /**
@@ -46,21 +46,36 @@ export async function bridgeMessage(raw: string | Buffer) {
   }
   if (msg.type === "ping") return;
   if (msg.type === "ack" && msg.id) {
+    const [row] = await db.select().from(outboxMessages).where(eq(outboxMessages.id, msg.id));
     if (msg.ok) {
       await db
         .update(outboxMessages)
         .set({ status: "sent", externalMessageId: msg.externalMessageId ?? null, sentAt: new Date() })
         .where(eq(outboxMessages.id, msg.id));
+      // Scheduled-notification deliveries are only "sent" once the bridge
+      // actually delivered the outbox row to Messages.app.
+      if (row?.deliveryId) {
+        await db
+          .update(deliveries)
+          .set({ status: "sent", deliveredAt: new Date(), error: null })
+          .where(eq(deliveries.id, row.deliveryId));
+      }
     } else {
-      const [row] = await db.select().from(outboxMessages).where(eq(outboxMessages.id, msg.id));
-      const attempts = (row?.attemptCount ?? 0);
+      const attempts = row?.attemptCount ?? 0;
+      const exhausted = attempts >= 5;
       await db
         .update(outboxMessages)
         .set({
-          status: attempts >= 5 ? "failed" : "pending",
+          status: exhausted ? "failed" : "pending",
           error: msg.error ?? "send failed",
         })
         .where(eq(outboxMessages.id, msg.id));
+      if (exhausted && row?.deliveryId) {
+        await db
+          .update(deliveries)
+          .set({ status: "failed", error: msg.error ?? "bridge send failed" })
+          .where(eq(deliveries.id, row.deliveryId));
+      }
     }
   }
 }

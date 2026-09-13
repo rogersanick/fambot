@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { AsciiEmptyState } from "@/components/ascii/ascii-empty-state";
+import { Button } from "@/components/ui/button";
+import { RobotEmptyState } from "@/components/robot/scenes";
 import { TaskChart, type TaskChartDatum } from "./task-chart";
 import { cn } from "@/lib/utils";
 
@@ -13,10 +15,18 @@ export type WeekDay = {
 
 export type TimelineItem = {
   id: string;
-  kind: "event" | "reminder";
+  kind: "event" | "reminder" | "todo";
   title: string;
   when: string;
   detail?: string;
+  /** YYYY-MM-DD in the household timezone; matches WeekDay.key. */
+  day: string;
+};
+
+const KIND_DOT: Record<TimelineItem["kind"], string> = {
+  event: "bg-chart-4",
+  reminder: "bg-chart-2",
+  todo: "bg-chart-1",
 };
 
 export type OverviewStats = {
@@ -91,6 +101,10 @@ function heatColor(count: number): string {
 
 export function OverviewTab({ stats, completionSpark, eventSpark, taskChartData, week, timeline }: OverviewTabProps) {
   const hasTasks = taskChartData.some((d) => d.open + d.done > 0);
+  /** Day key selected in "The week ahead"; null = show the whole week. */
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const selected = selectedDay ? week.find((d) => d.key === selectedDay) : undefined;
+  const visibleTimeline = selected ? timeline.filter((item) => item.day === selected.key) : timeline;
   return (
     <div className="grid gap-4">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -127,7 +141,7 @@ export function OverviewTab({ stats, completionSpark, eventSpark, taskChartData,
             {hasTasks ? (
               <TaskChart data={taskChartData} />
             ) : (
-              <AsciiEmptyState variant="sprout" caption="No tasks yet — plant one." />
+              <RobotEmptyState variant="painting" caption="No tasks yet — plant one." />
             )}
           </CardContent>
         </Card>
@@ -141,24 +155,28 @@ export function OverviewTab({ stats, completionSpark, eventSpark, taskChartData,
               {week.map((d) => (
                 <div key={d.key} className="flex flex-col items-center gap-1.5">
                   <span className="text-muted-foreground text-[10px] tracking-wide uppercase">{d.label}</span>
-                  <div
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDay((cur) => (cur === d.key ? null : d.key))}
+                    aria-pressed={selectedDay === d.key}
                     className={cn(
-                      "flex aspect-square w-full max-w-12 flex-col items-center justify-center rounded-lg transition-transform hover:scale-105",
+                      "flex aspect-square w-full max-w-12 cursor-pointer flex-col items-center justify-center rounded-lg transition-transform hover:scale-105",
                       d.isToday && "ring-ring ring-2 ring-offset-2 ring-offset-background",
+                      selectedDay === d.key && "ring-primary ring-2 ring-offset-2 ring-offset-background",
                     )}
                     style={{ backgroundColor: heatColor(d.count) }}
-                    title={`${d.count} item${d.count === 1 ? "" : "s"}`}
+                    title={`${d.count} item${d.count === 1 ? "" : "s"} — click to filter`}
                   >
                     <span className={cn("text-sm font-medium", d.count >= 3 && "text-primary-foreground")}>
                       {d.dayNum}
                     </span>
-                  </div>
+                  </button>
                   <span className="text-muted-foreground text-[10px]">{d.count > 0 ? d.count : "·"}</span>
                 </div>
               ))}
             </div>
             <p className="text-muted-foreground mt-3 text-xs">
-              Events and due todos per day — darker means busier.
+              Events and due todos per day — darker means busier. Click a day to filter the list below.
             </p>
           </CardContent>
         </Card>
@@ -166,19 +184,35 @@ export function OverviewTab({ stats, completionSpark, eventSpark, taskChartData,
 
       <Card className="animate-fade-up" style={{ animationDelay: "360ms" }}>
         <CardHeader>
-          <CardTitle className="font-serif text-lg">Coming up</CardTitle>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="font-serif text-lg">
+              {selected ? `Coming up · ${selected.label} ${selected.dayNum}` : "Coming up"}
+            </CardTitle>
+            {selected && (
+              <Button variant="ghost" size="sm" onClick={() => setSelectedDay(null)}>
+                Show whole week
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
-          {timeline.length === 0 ? (
-            <AsciiEmptyState variant="sun" caption="Nothing on the horizon this week." />
+          {visibleTimeline.length === 0 ? (
+            <RobotEmptyState
+              variant="hiking"
+              caption={
+                selected
+                  ? `Nothing scheduled for ${selected.label} ${selected.dayNum}.`
+                  : "Nothing on the horizon this week."
+              }
+            />
           ) : (
             <div className="stagger-children border-border ml-2 grid gap-0 border-l-2">
-              {timeline.map((item) => (
+              {visibleTimeline.map((item) => (
                 <div key={`${item.kind}-${item.id}`} className="relative py-2 pl-5">
                   <span
                     className={cn(
                       "ring-background absolute top-3.5 -left-[5px] h-2 w-2 rounded-full ring-2",
-                      item.kind === "event" ? "bg-chart-4" : "bg-chart-2",
+                      KIND_DOT[item.kind],
                     )}
                     aria-hidden
                   />

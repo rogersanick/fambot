@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/mcp": "^2.0.48",
+    "@ai-sdk/openai": "^4.0.65",
     "@fambot/shared": "workspace:*",
+    "ai": "^7.0.97",
     "zod": "^4.1.0"
   },
   "devDependencies": {

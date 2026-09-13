@@ -13,11 +13,15 @@
     "@fambot/calendar": "workspace:*",
     "@fambot/database": "workspace:*",
     "@fambot/domain": "workspace:*",
+    "@fambot/mcp": "workspace:*",
     "@fambot/messaging": "workspace:*",
     "@fambot/shared": "workspace:*",
+    "@hono/mcp": "^0.3.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-auth": "^1.3.0",
     "drizzle-orm": "^0.44.0",
     "hono": "^4.9.0",
+    "jose": "^6.2.12",
     "zod": "^4.1.0"
   },
   "devDependencies": {

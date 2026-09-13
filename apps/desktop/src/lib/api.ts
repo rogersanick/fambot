@@ -13,7 +13,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new ApiError(res.status, body || res.statusText);
+    throw new ApiError(res.status, apiErrorMessage(res.status, body));
   }
   return (await res.json()) as T;
 }
@@ -27,6 +27,17 @@ export class ApiError extends Error {
   }
 }
 
+function apiErrorMessage(status: number, body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { message?: unknown; error?: unknown };
+    if (typeof parsed.message === "string" && parsed.message.trim()) return parsed.message;
+    if (typeof parsed.error === "string" && parsed.error.trim()) return parsed.error;
+  } catch {
+    // keep the raw body when it isn't JSON
+  }
+  return body || `Request failed (${status})`;
+}
+
 // --- server row shapes (drizzle camelCase over JSON) --------------------------
 
 export type Household = { id: string; name: string; timezone: string; botName: string };
@@ -38,6 +49,23 @@ export type Member = {
   role: "owner" | "member";
 };
 export type Identity = { id: string; memberId: string; type: string; value: string };
+export type HouseholdInvite = {
+  id: string;
+  memberId: string;
+  displayName: string;
+  state: "pending" | "expired" | "accepted";
+  smsStatus: "pending" | "queued" | "sent" | "delivered" | "failed";
+  sendError: string | null;
+  expiresAt: string;
+};
+export type InvitePreview = {
+  id: string;
+  household: { id: string; name: string };
+  member: { id: string; displayName: string; phone: string | null };
+  expiresAt: string;
+  state: "pending" | "expired" | "accepted";
+  smsStatus: HouseholdInvite["smsStatus"];
+};
 export type Task = {
   id: string;
   title: string;
@@ -47,8 +75,21 @@ export type Task = {
   dueAt: string | null;
   rrule: string | null;
   nagIntervalMin: number;
+  seriesId: string | null;
+  scheduledFor: string | null;
   completedAt: string | null;
   createdAt: string;
+};
+export type TaskSeries = {
+  id: string;
+  title: string;
+  rrule: string;
+  timezone: string;
+  nagIntervalMin: number;
+  status: "active" | "exhausted" | "cancelled";
+  nextOccurrenceAt: string | null;
+  listId: string | null;
+  assigneeMemberId: string | null;
 };
 export type List = { id: string; name: string };
 export type Reminder = {
@@ -66,7 +107,16 @@ export type EventItem = {
   startsAt: string;
   endsAt: string | null;
   location: string | null;
+  rrule: string | null;
   source: "internal" | "google";
+};
+export type CommentSubjectType = "task" | "event" | "list";
+export type Comment = {
+  id: string;
+  body: string;
+  createdAt: string;
+  authorMemberId: string | null;
+  authorName: string | null;
 };
 export type ChatMessage = {
   id: string;
@@ -76,8 +126,27 @@ export type ChatMessage = {
   senderMemberId: string | null;
 };
 export type BridgeStatus = { connected: boolean; lastSeen: string | null };
+export type SmsStatus = {
+  configured: boolean;
+  fromNumber: string | null;
+  apiKeySet?: boolean;
+  inboundReady?: boolean;
+};
 export type Integrations = {
   google: { configured: boolean; connected: boolean; email: string | null };
+  sms: SmsStatus;
+  bridge: BridgeStatus;
+};
+export type NotificationChannel = {
+  id: string;
+  channel: "sms" | "imessage";
+  enabled: boolean;
+  conversationId: string | null;
+};
+export type NotificationChannelsResponse = {
+  channels: NotificationChannel[];
+  imessageConversations: Array<{ id: string; name: string | null; kind: "direct" | "group" }>;
+  sms: SmsStatus;
   bridge: BridgeStatus;
 };
 
@@ -91,22 +160,71 @@ export type HouseholdBundle = {
   household: Household;
   members: Member[];
   identities: Identity[];
+  invites: HouseholdInvite[];
   me: Member;
   bridge: BridgeStatus;
 };
 
 // --- endpoints -----------------------------------------------------------------
 
+const commentPath: Record<CommentSubjectType, string> = {
+  task: "tasks",
+  event: "events",
+  list: "lists",
+};
+
 export const api = {
-  config: () => req<{ googleAuth: boolean }>("/config").catch(() => ({ googleAuth: false })),
+  config: () =>
+    req<{ googleAuth: boolean; aiConfigured: boolean }>("/config").catch(() => ({
+      googleAuth: false,
+      aiConfigured: false,
+    })),
   me: () => req<Me>("/me"),
-  createHousehold: (body: { name: string; timezone: string }) =>
+  createHousehold: (body: { name: string; timezone: string; ownerPhone: string }) =>
     req<{ household: Household; member: Member }>("/households", { method: "POST", body: JSON.stringify(body) }),
   household: (hid: string) => req<HouseholdBundle>(`/households/${hid}`),
   updateHousehold: (hid: string, body: { name?: string; timezone?: string; botName?: string }) =>
     req<{ household: Household }>(`/households/${hid}`, { method: "PATCH", body: JSON.stringify(body) }),
-  addMember: (hid: string, body: { displayName: string; imessageHandle?: string }) =>
-    req<{ member: Member }>(`/households/${hid}/members`, { method: "POST", body: JSON.stringify(body) }),
+  createInvite: (hid: string, body: { displayName: string; phone: string }) =>
+    req<{ member: Member; invite: HouseholdInvite }>(`/households/${hid}/invites`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  invite: (token: string) =>
+    req<{ invite: InvitePreview }>("/invites/preview", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
+  acceptInvite: (token: string) =>
+    req<{ ok: true; householdId: string; memberId: string }>("/invites/accept", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
+  resendInvite: (hid: string, inviteId: string) =>
+    req<{ invite: HouseholdInvite }>(`/households/${hid}/invites/${inviteId}/resend`, {
+      method: "POST",
+    }),
+  cancelInvite: (hid: string, inviteId: string) =>
+    req<{ ok: true }>(`/households/${hid}/invites/${inviteId}`, { method: "DELETE" }),
+  setMemberPhone: (hid: string, mid: string, phone: string) =>
+    req<{ phone: string }>(`/households/${hid}/members/${mid}/phone`, {
+      method: "PATCH",
+      body: JSON.stringify({ phone }),
+    }),
+  setMemberImessage: (hid: string, mid: string, handle: string | null) =>
+    req<{ handle: string | null }>(`/households/${hid}/members/${mid}/imessage`, {
+      method: "PATCH",
+      body: JSON.stringify({ handle }),
+    }),
+
+  notificationChannels: {
+    get: (hid: string) => req<NotificationChannelsResponse>(`/households/${hid}/notification-channels`),
+    update: (hid: string, body: { channel: "sms" | "imessage"; enabled: boolean; conversationId?: string | null }) =>
+      req<{ channel: NotificationChannel }>(`/households/${hid}/notification-channels`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
+  },
 
   chat: {
     get: (hid: string) => req<{ conversationId: string; messages: ChatMessage[] }>(`/households/${hid}/chat`),
@@ -126,16 +244,39 @@ export const api = {
   },
 
   tasks: {
-    list: (hid: string) => req<{ tasks: Task[]; lists: List[] }>(`/households/${hid}/tasks`),
+    list: (hid: string) => req<{ tasks: Task[]; lists: List[]; series: TaskSeries[] }>(`/households/${hid}/tasks`),
     create: (
       hid: string,
-      body: { title: string; dueAt?: string | null; listId?: string | null; assigneeMemberId?: string | null }
+      body: {
+        title: string;
+        dueAt?: string | null;
+        listId?: string | null;
+        assigneeMemberId?: string | null;
+        rrule?: string | null;
+        nagIntervalMin?: number;
+      }
     ) => req<{ task: Task }>(`/households/${hid}/tasks`, { method: "POST", body: JSON.stringify(body) }),
     patch: (
       hid: string,
       tid: string,
-      body: { status?: "open" | "done" | "cancelled"; title?: string; dueAt?: string | null; listId?: string | null }
+      body: {
+        status?: "open" | "done" | "cancelled";
+        title?: string;
+        dueAt?: string | null;
+        listId?: string | null;
+        nagIntervalMin?: number;
+      }
     ) => req<unknown>(`/households/${hid}/tasks/${tid}`, { method: "PATCH", body: JSON.stringify(body) }),
+  },
+
+  taskSeries: {
+    patch: (
+      hid: string,
+      sid: string,
+      body: { title?: string; rrule?: string; nagIntervalMin?: number }
+    ) => req<{ series: TaskSeries }>(`/households/${hid}/task-series/${sid}`, { method: "PATCH", body: JSON.stringify(body) }),
+    cancel: (hid: string, sid: string) =>
+      req<{ ok: true }>(`/households/${hid}/task-series/${sid}`, { method: "DELETE" }),
   },
 
   lists: {
@@ -150,10 +291,26 @@ export const api = {
     list: (hid: string) => req<{ events: EventItem[] }>(`/households/${hid}/events`),
     create: (
       hid: string,
-      body: { title: string; startsAt: string; endsAt?: string | null; location?: string | null }
+      body: {
+        title: string;
+        startsAt: string;
+        endsAt?: string | null;
+        location?: string | null;
+        rrule?: string | null;
+      }
     ) => req<{ event: EventItem }>(`/households/${hid}/events`, { method: "POST", body: JSON.stringify(body) }),
     remove: (hid: string, eid: string) =>
       req<{ ok: true }>(`/households/${hid}/events/${eid}`, { method: "DELETE" }),
+  },
+
+  comments: {
+    list: (hid: string, subject: CommentSubjectType, sid: string) =>
+      req<{ comments: Comment[] }>(`/households/${hid}/${commentPath[subject]}/${sid}/comments`),
+    add: (hid: string, subject: CommentSubjectType, sid: string, body: string) =>
+      req<{ comment: Comment }>(`/households/${hid}/${commentPath[subject]}/${sid}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      }),
   },
 
   integrations: {

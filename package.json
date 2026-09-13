@@ -14,7 +14,7 @@
     "dev:desktop": "bun --cwd apps/desktop dev",
     "dev:bridge": "bun --cwd apps/bridge dev",
     "db:push": "bun --cwd packages/database push",
-    "test": "bun test packages apps/api apps/worker apps/bridge",
+    "test": "bun test packages apps/api apps/worker apps/bridge apps/desktop/src/lib",
     "typecheck": "bun run --filter '*' typecheck"
   }
 }

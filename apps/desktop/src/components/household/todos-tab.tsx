@@ -4,8 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { SubmitButton } from "@/components/submit-button";
-import { AsciiEmptyState } from "@/components/ascii/ascii-empty-state";
+import { DateTimePicker } from "@/components/date-time-picker";
+import { RecurrencePicker } from "@/components/recurrence-picker";
+import { SnoozeMenu } from "@/components/snooze-menu";
+import { RobotEmptyState } from "@/components/robot/scenes";
+import { MessageSquare } from "lucide-react";
 import { MemberAvatar } from "./member-avatar";
+import { CommentThreadDialog } from "./comment-thread-dialog";
 import { fmtWhen, isOverdue, localDate } from "@/lib/format";
 import { api, localToIso } from "@/lib/api";
 import { useAction } from "./use-actions";
@@ -41,16 +46,57 @@ function TaskItem({ householdId, task, tz }: { householdId: string; task: TaskRo
         &#10003;
       </Button>
       <span className="flex-1 text-sm">{task.title}</span>
+      {task.recurrence && (
+        <span
+          className="text-muted-foreground rounded-full border px-1.5 py-0.5 text-[10px]"
+          title={`Repeats ${task.recurrence} · nudges every ${task.nag_interval_min} min until done`}
+        >
+          ↻ {task.recurrence}
+        </span>
+      )}
       {task.assignee && (
         <span className="flex items-center gap-1.5" title={task.assignee.display_name}>
           <MemberAvatar name={task.assignee.display_name} size="sm" />
         </span>
       )}
       {task.due_at && (
-        <span className={cn("text-xs", overdue ? "text-destructive font-medium" : "text-muted-foreground")}>
+        <span
+          className={cn("text-xs", overdue ? "text-destructive font-medium" : "text-muted-foreground")}
+          title={overdue ? `Overdue — nudging every ${task.nag_interval_min} min until done` : undefined}
+        >
           {fmtWhen(task.due_at, tz)}
         </span>
       )}
+      {task.due_at && (
+        <SnoozeMenu
+          tz={tz}
+          isRecurring={Boolean(task.series_id)}
+          onPostpone={(iso) => run(() => api.tasks.patch(householdId, task.id, { dueAt: iso }))}
+          onStopRepeating={
+            task.series_id
+              ? () => run(() => api.taskSeries.cancel(householdId, task.series_id!))
+              : undefined
+          }
+        />
+      )}
+      <CommentThreadDialog
+        householdId={householdId}
+        tz={tz}
+        subject="task"
+        subjectId={task.id}
+        title={task.title}
+        trigger={
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            className="text-muted-foreground h-6 w-6 p-0 opacity-0 transition-opacity group-hover:opacity-100"
+            title="Comments"
+          >
+            <MessageSquare className="size-3.5" />
+          </Button>
+        }
+      />
       <Button
         variant="ghost"
         size="sm"
@@ -81,8 +127,6 @@ function ListSection({
   filter: Filter;
   openCount: number;
 }) {
-  const [renaming, setRenaming] = useState(false);
-  const { run } = useAction(householdId);
   const visibleBuckets: Bucket[] =
     filter === "all" ? ["overdue", "today", "upcoming", "someday"] : [filter];
   const visibleCount = visibleBuckets.reduce((n, b) => n + buckets[b].length, 0);
@@ -90,55 +134,9 @@ function ListSection({
 
   return (
     <div>
-      <div className="group/list mb-1 flex items-center gap-2 px-2">
-        {list && renaming ? (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const name = String(new FormData(e.currentTarget).get("name") ?? "").trim();
-              if (name) void run(() => api.lists.rename(householdId, list.id, name));
-              setRenaming(false);
-            }}
-            className="flex items-center gap-2"
-          >
-            <Input name="name" defaultValue={list.name} autoFocus className="h-7 w-44 text-sm" />
-            <Button variant="outline" size="sm" type="submit" className="h-7 text-xs">
-              Save
-            </Button>
-            <Button variant="ghost" size="sm" type="button" className="h-7 text-xs" onClick={() => setRenaming(false)}>
-              Cancel
-            </Button>
-          </form>
-        ) : (
-          <>
-            <p className="font-serif text-sm">{list?.name ?? "General"}</p>
-            <span className="text-muted-foreground text-xs">{openCount}</span>
-            {list && (
-              <span className="flex items-center opacity-0 transition-opacity group-hover/list:opacity-100">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  type="button"
-                  className="text-muted-foreground h-6 w-6 p-0"
-                  title="Rename list"
-                  onClick={() => setRenaming(true)}
-                >
-                  &#9998;
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  type="button"
-                  onClick={() => run(() => api.lists.remove(householdId, list.id))}
-                  className="text-muted-foreground h-6 w-6 p-0"
-                  title="Delete list (its todos move to General)"
-                >
-                  &times;
-                </Button>
-              </span>
-            )}
-          </>
-        )}
+      <div className="mb-1 flex items-center gap-2 px-2">
+        <p className="font-serif text-sm">{list?.name ?? "General"}</p>
+        <span className="text-muted-foreground text-xs">{openCount}</span>
       </div>
       {visibleCount === 0 ? (
         <p className="text-muted-foreground px-2 pb-1 text-xs">No open todos.</p>
@@ -185,7 +183,6 @@ export function TodosTab({
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const addTask = useAction(householdId);
-  const addList = useAction(householdId);
   const reopen = useAction(householdId);
 
   const open = tasks.filter((t) => t.status === "open");
@@ -238,7 +235,7 @@ export function TodosTab({
         <CardHeader>
           <CardTitle className="font-serif text-lg">Add a todo</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3">
+        <CardContent>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -246,53 +243,67 @@ export function TodosTab({
               const fd = new FormData(form);
               const title = String(fd.get("title") ?? "").trim();
               if (!title) return;
+              const rrule = String(fd.get("rrule") ?? "") || null;
+              const dueAt = localToIso(String(fd.get("due_at") ?? ""), tz);
               void addTask
-                .run(() =>
-                  api.tasks.create(householdId, {
+                .run(() => {
+                  if (rrule && !dueAt) {
+                    return Promise.reject(new Error("A repeating todo needs a due date for its first occurrence"));
+                  }
+                  return api.tasks.create(householdId, {
                     title,
                     listId: String(fd.get("list_id") ?? "") || null,
                     assigneeMemberId: String(fd.get("assignee_id") ?? "") || null,
-                    dueAt: localToIso(String(fd.get("due_at") ?? ""), tz),
-                  })
-                )
+                    dueAt,
+                    rrule,
+                    nagIntervalMin: Number(fd.get("nag_interval") ?? 30),
+                  });
+                })
                 .then((ok) => ok && form.reset());
             }}
-            className="grid gap-3 sm:grid-cols-[1fr_auto_auto_auto_auto]"
+            className="grid gap-3"
           >
-            <Input name="title" placeholder="Pick up the dry cleaning" required />
-            <select name="list_id" className={selectClass + " sm:w-36"} defaultValue="">
-              <option value="">General</option>
-              {lists.map((l) => (
-                <option key={l.id} value={l.id}>
-                  {l.name}
-                </option>
-              ))}
-            </select>
-            <select name="assignee_id" className={selectClass + " sm:w-40"} defaultValue="">
-              <option value="">Anyone</option>
-              {members.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.display_name}
-                </option>
-              ))}
-            </select>
-            <Input name="due_at" type="datetime-local" className="sm:w-52" />
-            <SubmitButton pending={addTask.pending}>Add</SubmitButton>
-          </form>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const form = e.currentTarget;
-              const name = String(new FormData(form).get("name") ?? "").trim();
-              if (!name) return;
-              void addList.run(() => api.lists.create(householdId, name)).then((ok) => ok && form.reset());
-            }}
-            className="flex items-center gap-2"
-          >
-            <Input name="name" placeholder="New list (e.g. Costco)" className="h-8 w-56 text-sm" required />
-            <Button variant="outline" size="sm" type="submit" className="h-8 text-xs">
-              Create list
-            </Button>
+            <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
+              <Input name="title" placeholder="Pick up the dry cleaning" required />
+              <select name="list_id" className={selectClass + " sm:w-36"} defaultValue="">
+                <option value="">General</option>
+                {lists.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+              <select name="assignee_id" className={selectClass + " sm:w-40"} defaultValue="">
+                <option value="">Anyone</option>
+                {members.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.display_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-[auto_auto_auto_auto_1fr]">
+              <DateTimePicker name="due_at" timeZone={tz} placeholder="Due date (optional)" />
+              <RecurrencePicker name="rrule" />
+              <select
+                name="nag_interval"
+                className={selectClass + " sm:w-44"}
+                defaultValue="30"
+                title="After the due time, Fambot nudges at this cadence until the todo is done"
+              >
+                <option value="15">Nudge every 15 min</option>
+                <option value="30">Nudge every 30 min</option>
+                <option value="60">Nudge every hour</option>
+                <option value="120">Nudge every 2 hours</option>
+                <option value="240">Nudge every 4 hours</option>
+              </select>
+              <SubmitButton pending={addTask.pending}>Add</SubmitButton>
+            </div>
+            <p className="text-muted-foreground text-xs">
+              From the due time, Fambot keeps nudging at the chosen cadence until the todo is marked
+              done. Repeating todos create each occurrence on schedule — finishing one never shifts
+              the next.
+            </p>
           </form>
         </CardContent>
       </Card>
@@ -322,7 +333,7 @@ export function TodosTab({
           </div>
         </CardHeader>
         <CardContent className="grid gap-4">
-          {open.length === 0 && <AsciiEmptyState variant="sprout" caption="Nothing to do. Enjoy the calm." />}
+          {open.length === 0 && <RobotEmptyState variant="boxing" caption="Nothing to do. Enjoy the calm." />}
           {open.length > 0 &&
             groups.map((g) => (
               <ListSection

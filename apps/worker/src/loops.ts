@@ -1,41 +1,126 @@
-import { and, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Db } from "@fambot/database";
-import {
-  conversationParticipants,
-  conversations,
-  deliveries,
-  reminders,
-  tasks,
-} from "@fambot/database";
-import { nextOccurrence } from "@fambot/domain";
-import type { MessagingChannel } from "@fambot/messaging";
+import { reminders, taskSeries } from "@fambot/database";
+import { materializeOccurrence, nextOccurrence } from "@fambot/domain";
+import type { DispatchOutcome, NotificationRequest } from "@fambot/messaging";
 
 /**
+ * Scheduled notifications go through the household's NotificationDispatcher —
+ * never through web chat. The dispatcher broadcasts to every enabled channel
+ * (SMS by default, iMessage opt-in), records one delivery row per recipient
+ * and channel, and dedupes on a deterministic occurrence key so retries after
+ * a crash can never double-send.
+ *
  * Lease-based claims: claiming bumps the due timestamp ~2 minutes into the
  * future inside a single UPDATE ... FOR UPDATE SKIP LOCKED, so concurrent
- * workers never double-claim and a crash mid-delivery retries automatically.
+ * workers never double-claim and a crash mid-dispatch retries automatically.
  */
 
-export async function runWorkerOnce(db: Db, channel: MessagingChannel) {
-  const fired = await fireDueReminders(db, channel);
-  const nudged = await nudgeDueTasks(db, channel);
-  return { fired, nudged };
+export type ScheduledNotifier = {
+  dispatch(req: NotificationRequest): Promise<DispatchOutcome>;
+};
+
+export async function runWorkerOnce(db: Db, notifier: ScheduledNotifier) {
+  const spawned = await spawnDueTaskOccurrences(db);
+  const fired = await fireDueReminders(db, notifier);
+  const nudged = await nudgeDueTasks(db, notifier);
+  return { fired, nudged, spawned };
+}
+
+// --- recurring task series -----------------------------------------------------
+
+/** How far ahead occurrences are materialized so they show up in the UI early. */
+const SERIES_LOOKAHEAD_MS = 24 * 60 * 60 * 1000;
+/** Cap per series per pass; dense rules catch up over successive passes. */
+const MAX_SPAWN_PER_CLAIM = 5;
+
+/**
+ * Advance due task-series cursors and create concrete occurrences on their
+ * fixed schedule — regardless of whether earlier occurrences are still open.
+ * The unique (series_id, scheduled_for) index makes retries and concurrent
+ * workers idempotent, so the lease bump is purely an efficiency measure.
+ */
+async function spawnDueTaskOccurrences(db: Db): Promise<number> {
+  const claimed = await db.execute(sql`
+    UPDATE task_series SET next_occurrence_at = now() + interval '2 minutes'
+    FROM (
+      SELECT id, next_occurrence_at FROM task_series
+      WHERE status = 'active' AND next_occurrence_at IS NOT NULL
+        AND next_occurrence_at <= now() + interval '24 hours'
+      ORDER BY next_occurrence_at
+      LIMIT 10
+      FOR UPDATE SKIP LOCKED
+    ) AS due
+    WHERE task_series.id = due.id
+    RETURNING task_series.id, task_series.household_id, task_series.list_id,
+              task_series.title, task_series.notes, task_series.assignee_member_id,
+              task_series.creator_member_id, task_series.conversation_id,
+              task_series.rrule, task_series.timezone, task_series.anchor_at,
+              task_series.nag_interval_min, due.next_occurrence_at AS due_at
+  `);
+
+  let count = 0;
+  const horizon = new Date(Date.now() + SERIES_LOOKAHEAD_MS);
+  for (const row of claimed.rows as Array<Record<string, unknown>>) {
+    const seriesId = row.id as string;
+    const rrule = row.rrule as string;
+    const tz = row.timezone as string;
+    const anchorAt = new Date(row.anchor_at as string);
+    const series = {
+      id: seriesId,
+      householdId: row.household_id as string,
+      creatorMemberId: row.creator_member_id as string | null,
+      conversationId: row.conversation_id as string | null,
+      title: row.title as string,
+      notes: row.notes as string | null,
+      listId: row.list_id as string | null,
+      assigneeMemberId: row.assignee_member_id as string | null,
+      timezone: tz,
+      nagIntervalMin: row.nag_interval_min as number,
+    };
+
+    let at: Date | null = new Date(row.due_at as string);
+    let spawnedForSeries = 0;
+    while (at && at <= horizon && spawnedForSeries < MAX_SPAWN_PER_CLAIM) {
+      const created = await materializeOccurrence(db, series, at);
+      if (created) count++;
+      spawnedForSeries++;
+      at = nextOccurrence(rrule, tz, anchorAt, at);
+    }
+
+    if (at) {
+      await db
+        .update(taskSeries)
+        .set({ nextOccurrenceAt: at, updatedAt: new Date() })
+        .where(eq(taskSeries.id, seriesId));
+    } else {
+      await db
+        .update(taskSeries)
+        .set({ nextOccurrenceAt: null, status: "exhausted", updatedAt: new Date() })
+        .where(eq(taskSeries.id, seriesId));
+    }
+  }
+  return count;
 }
 
 // --- reminders ---------------------------------------------------------------
 
-async function fireDueReminders(db: Db, channel: MessagingChannel): Promise<number> {
+async function fireDueReminders(db: Db, notifier: ScheduledNotifier): Promise<number> {
+  // The CTE returns the PRE-claim next_fire_at: it is the occurrence being
+  // fired, and the deterministic dedupe key for its deliveries.
   const claimed = await db.execute(sql`
-    UPDATE reminders SET next_fire_at = now() + interval '2 minutes'
-    WHERE id IN (
-      SELECT id FROM reminders
+    UPDATE reminders r SET next_fire_at = now() + interval '2 minutes'
+    FROM (
+      SELECT id, next_fire_at AS occurrence_at FROM reminders
       WHERE status = 'scheduled' AND next_fire_at <= now()
       ORDER BY next_fire_at
       LIMIT 10
       FOR UPDATE SKIP LOCKED
-    )
-    RETURNING id, household_id, title, target_type, target_member_id, target_conversation_id,
-              fire_at, rrule, timezone, created_at
+    ) AS due
+    WHERE r.id = due.id
+    RETURNING r.id, r.household_id, r.title, r.target_type, r.target_member_id,
+              r.target_conversation_id, r.fire_at, r.rrule, r.timezone,
+              due.occurrence_at
   `);
 
   let count = 0;
@@ -44,45 +129,26 @@ async function fireDueReminders(db: Db, channel: MessagingChannel): Promise<numb
     const title = row.title as string;
     const tz = row.timezone as string;
     const rrule = row.rrule as string | null;
-    const fireAt = row.fire_at ? new Date(row.fire_at as string) : new Date(row.created_at as string);
+    const occurrenceAt = new Date(row.occurrence_at as string);
+    const fireAt = row.fire_at ? new Date(row.fire_at as string) : occurrenceAt;
 
-    const conversationId = await resolveDeliveryConversation(db, {
+    // Durable fan-out: the dispatcher records a delivery row per recipient and
+    // channel before any provider call. If dispatch itself throws (DB down),
+    // the lease expiry retries this occurrence; provider-level failures live
+    // in the delivery audit and are NOT re-fired.
+    await notifier.dispatch({
       householdId: row.household_id as string,
-      targetType: row.target_type as "member" | "conversation",
-      targetMemberId: row.target_member_id as string | null,
-      targetConversationId: row.target_conversation_id as string | null,
+      kind: "reminder",
+      sourceId: id,
+      occurrenceKey: occurrenceAt.toISOString(),
+      target: {
+        memberId: (row.target_member_id as string | null) ?? null,
+        conversationId: (row.target_conversation_id as string | null) ?? null,
+      },
+      text: `⏰ Reminder: ${title}`,
     });
 
-    const [delivery] = await db
-      .insert(deliveries)
-      .values({
-        kind: "reminder",
-        reminderId: id,
-        conversationId,
-        memberId: (row.target_member_id as string | null) ?? null,
-        channel: conversationId ? await channelOf(db, conversationId) : "app_chat",
-        scheduledFor: new Date(),
-        attemptCount: 1,
-      })
-      .returning({ id: deliveries.id });
-
-    let ok = false;
-    if (conversationId) {
-      try {
-        await channel.sendMessage({ conversationId, text: `⏰ Reminder: ${title}` });
-        ok = true;
-      } catch (err) {
-        console.error(`[worker] reminder ${id} delivery failed:`, err);
-      }
-    }
-
-    await db
-      .update(deliveries)
-      .set({ status: ok ? "sent" : "failed", deliveredAt: ok ? new Date() : null, error: ok ? null : "delivery failed" })
-      .where(eq(deliveries.id, delivery!.id));
-
-    // Compute next occurrence / completion regardless of delivery result —
-    // a failed occurrence is recorded in deliveries, not re-fired forever.
+    // Advance the schedule only after the occurrence was durably fanned out.
     if (rrule) {
       const next = nextOccurrence(rrule, tz, fireAt, new Date());
       if (next) {
@@ -100,112 +166,43 @@ async function fireDueReminders(db: Db, channel: MessagingChannel): Promise<numb
 
 // --- task nudges ---------------------------------------------------------------
 
-async function nudgeDueTasks(db: Db, channel: MessagingChannel): Promise<number> {
+async function nudgeDueTasks(db: Db, notifier: ScheduledNotifier): Promise<number> {
   const claimed = await db.execute(sql`
-    UPDATE tasks SET next_nudge_at = now() + (nag_interval_min * interval '1 minute')
-    WHERE id IN (
-      SELECT id FROM tasks
+    UPDATE tasks t SET next_nudge_at = now() + (t.nag_interval_min * interval '1 minute')
+    FROM (
+      SELECT id, next_nudge_at AS occurrence_at FROM tasks
       WHERE status = 'open' AND next_nudge_at IS NOT NULL AND next_nudge_at <= now()
       ORDER BY next_nudge_at
       LIMIT 10
       FOR UPDATE SKIP LOCKED
-    )
-    RETURNING id, household_id, title, assignee_member_id, creator_member_id, conversation_id, nag_interval_min
+    ) AS due
+    WHERE t.id = due.id
+    RETURNING t.id, t.household_id, t.title, t.assignee_member_id,
+              t.creator_member_id, t.conversation_id, due.occurrence_at
   `);
 
   let count = 0;
   for (const row of claimed.rows as Array<Record<string, unknown>>) {
     const id = row.id as string;
     const title = row.title as string;
-    const conversationId = await resolveDeliveryConversation(db, {
+    const occurrenceAt = new Date(row.occurrence_at as string);
+    const targetMemberId =
+      (row.assignee_member_id as string | null) ?? (row.creator_member_id as string | null);
+
+    // The dispatcher stores the member's SMS conversation on the delivery row,
+    // so a bare SMS "done" resolves via tasks.lastNudged on that conversation.
+    await notifier.dispatch({
       householdId: row.household_id as string,
-      targetType: "member",
-      targetMemberId:
-        (row.assignee_member_id as string | null) ?? (row.creator_member_id as string | null),
-      targetConversationId: row.conversation_id as string | null,
+      kind: "task_nudge",
+      sourceId: id,
+      occurrenceKey: occurrenceAt.toISOString(),
+      target: {
+        memberId: targetMemberId,
+        conversationId: (row.conversation_id as string | null) ?? null,
+      },
+      text: `⏰ Still open: ${title} — reply "done" when it's finished.`,
     });
-
-    const [delivery] = await db
-      .insert(deliveries)
-      .values({
-        kind: "task_nudge",
-        taskId: id,
-        conversationId,
-        memberId: (row.assignee_member_id as string | null) ?? null,
-        channel: conversationId ? await channelOf(db, conversationId) : "app_chat",
-        scheduledFor: new Date(),
-        attemptCount: 1,
-      })
-      .returning({ id: deliveries.id });
-
-    let ok = false;
-    if (conversationId) {
-      try {
-        await channel.sendMessage({
-          conversationId,
-          text: `⏰ Still open: ${title} — reply "done" when it's finished.`,
-        });
-        ok = true;
-      } catch (err) {
-        console.error(`[worker] task nudge ${id} failed:`, err);
-      }
-    }
-    await db
-      .update(deliveries)
-      .set({ status: ok ? "sent" : "failed", deliveredAt: ok ? new Date() : null, error: ok ? null : "delivery failed" })
-      .where(eq(deliveries.id, delivery!.id));
     count++;
   }
   return count;
-}
-
-// --- helpers --------------------------------------------------------------------
-
-/**
- * Conversation targets deliver to that conversation. Member targets prefer
- * the member's app chat; fall back to the conversation the item came from.
- */
-async function resolveDeliveryConversation(
-  db: Db,
-  target: {
-    householdId: string;
-    targetType: "member" | "conversation";
-    targetMemberId: string | null;
-    targetConversationId: string | null;
-  }
-): Promise<string | null> {
-  if (target.targetType === "conversation" && target.targetConversationId) {
-    return target.targetConversationId;
-  }
-  if (target.targetMemberId) {
-    const [appChat] = await db
-      .select({ id: conversations.id })
-      .from(conversations)
-      .where(
-        and(
-          eq(conversations.householdId, target.householdId),
-          eq(conversations.channel, "app_chat"),
-          eq(conversations.ownerMemberId, target.targetMemberId)
-        )
-      );
-    if (appChat) return appChat.id;
-    // No app chat: fall back to origin conversation, then any conversation
-    // the member participates in.
-    if (target.targetConversationId) return target.targetConversationId;
-    const [participant] = await db
-      .select({ conversationId: conversationParticipants.conversationId })
-      .from(conversationParticipants)
-      .where(eq(conversationParticipants.memberId, target.targetMemberId))
-      .limit(1);
-    return participant?.conversationId ?? null;
-  }
-  return target.targetConversationId;
-}
-
-async function channelOf(db: Db, conversationId: string): Promise<"imessage" | "app_chat"> {
-  const [conv] = await db
-    .select({ channel: conversations.channel })
-    .from(conversations)
-    .where(eq(conversations.id, conversationId));
-  return (conv?.channel as "imessage" | "app_chat") ?? "app_chat";
 }

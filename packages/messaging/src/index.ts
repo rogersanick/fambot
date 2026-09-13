@@ -6,8 +6,10 @@ import { conversations, messages, outboxMessages } from "@fambot/database";
  * Messaging channels are adapters (design doc §7). The pipeline and worker
  * send through this interface and never know channel details.
  */
+export type OutboundKind = "message" | "progress";
+
 export interface MessagingChannel {
-  sendMessage(args: { conversationId: string; text: string }): Promise<void>;
+  sendMessage(args: { conversationId: string; text: string; kind?: OutboundKind }): Promise<void>;
 }
 
 /**
@@ -17,11 +19,20 @@ export interface MessagingChannel {
 export class AppChatChannel implements MessagingChannel {
   constructor(private db: Db) {}
 
-  async sendMessage({ conversationId, text }: { conversationId: string; text: string }): Promise<void> {
+  async sendMessage({
+    conversationId,
+    text,
+    kind = "message",
+  }: {
+    conversationId: string;
+    text: string;
+    kind?: OutboundKind;
+  }): Promise<void> {
     await this.db.insert(messages).values({
       conversationId,
       direction: "outbound",
       channel: "app_chat",
+      kind,
       text,
       sentAt: new Date(),
     });
@@ -38,7 +49,15 @@ export class ImsgChannel implements MessagingChannel {
     private notify?: () => void
   ) {}
 
-  async sendMessage({ conversationId, text }: { conversationId: string; text: string }): Promise<void> {
+  async sendMessage({
+    conversationId,
+    text,
+    kind = "message",
+  }: {
+    conversationId: string;
+    text: string;
+    kind?: OutboundKind;
+  }): Promise<void> {
     const [conv] = await this.db
       .select({ externalId: conversations.externalId })
       .from(conversations)
@@ -54,6 +73,7 @@ export class ImsgChannel implements MessagingChannel {
       conversationId,
       direction: "outbound",
       channel: "imessage",
+      kind,
       text,
       sentAt: new Date(),
     });
@@ -61,21 +81,46 @@ export class ImsgChannel implements MessagingChannel {
   }
 }
 
-/** Routes to the right channel based on the conversation's channel column. */
+/**
+ * Routes synchronous conversation replies (user asked, bot answers) to the
+ * right channel based on the conversation's channel column. Scheduled
+ * notifications never go through here — they use NotificationDispatcher.
+ */
 export class ChannelRouter implements MessagingChannel {
   constructor(
     private db: Db,
     private appChat: MessagingChannel,
-    private imsg: MessagingChannel
+    private imsg: MessagingChannel,
+    private sms: MessagingChannel | null = null
   ) {}
 
-  async sendMessage(args: { conversationId: string; text: string }): Promise<void> {
+  async sendMessage(args: { conversationId: string; text: string; kind?: OutboundKind }): Promise<void> {
     const [conv] = await this.db
       .select({ channel: conversations.channel })
       .from(conversations)
       .where(eq(conversations.id, args.conversationId));
     if (!conv) throw new Error(`conversation ${args.conversationId} not found`);
     if (conv.channel === "imessage") return this.imsg.sendMessage(args);
+    if (conv.channel === "sms") {
+      if (!this.sms) throw new Error("SMS reply requested but Telnyx is not configured");
+      return this.sms.sendMessage(args);
+    }
     return this.appChat.sendMessage(args);
   }
 }
+
+export {
+  TelnyxSmsChannel,
+  getOrCreateSmsConversation,
+  getOrCreateSmsGroupConversation,
+  MAX_GROUP_MMS_RECIPIENTS,
+  TELNYX_UNREACHABLE_MESSAGE,
+  isTelnyxUnreachable,
+  wrapTelnyxNetworkError,
+  type TelnyxConfig,
+} from "./telnyx";
+export {
+  NotificationDispatcher,
+  type NotificationRequest,
+  type DispatchOutcome,
+} from "./dispatcher";

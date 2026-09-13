@@ -1,25 +1,44 @@
 import { createDb } from "@fambot/database";
-import { AppChatChannel, ChannelRouter, ImsgChannel } from "@fambot/messaging";
+import { NotificationDispatcher, TelnyxSmsChannel } from "@fambot/messaging";
 import { runWorkerOnce } from "./loops";
 
 /**
  * Fambot worker: fires reminders and nags open tasks. No LLM is ever
  * involved here (design doc §21/§37.7) — everything is deterministic
  * schedule math over Postgres with lease-based atomic claims, safe for
- * multiple instances.
+ * multiple instances. Scheduled notifications broadcast to the household's
+ * enabled channels (SMS default, iMessage opt-in); web chat is never used.
  */
 
 const db = createDb(process.env.DATABASE_URL ?? "postgres://postgres:fambot@localhost:5433/fambot");
-const router = new ChannelRouter(db, new AppChatChannel(db), new ImsgChannel(db));
+
+const telnyxConfigured = Boolean(process.env.TELNYX_API_KEY && process.env.TELNYX_FROM_NUMBER);
+const telnyx = telnyxConfigured
+  ? new TelnyxSmsChannel(db, {
+      apiKey: process.env.TELNYX_API_KEY!,
+      fromNumber: process.env.TELNYX_FROM_NUMBER!,
+      messagingProfileId: process.env.TELNYX_MESSAGING_PROFILE_ID,
+    })
+  : null;
+// iMessage outbox rows are flushed by the API's bridge websocket sweeper
+// (every 15s), so no notify hook is needed here.
+const dispatcher = new NotificationDispatcher(db, { telnyx });
 
 const POLL_MS = Number(process.env.WORKER_POLL_MS ?? 5000);
 
-console.log(`[worker] started, polling every ${POLL_MS}ms`);
+console.log(
+  `[worker] started, polling every ${POLL_MS}ms (${
+    telnyxConfigured ? `SMS via Telnyx from ${process.env.TELNYX_FROM_NUMBER}` : "SMS disabled — set TELNYX_* vars"
+  })`
+);
 
 async function tick() {
   try {
-    const { fired, nudged } = await runWorkerOnce(db, router);
-    if (fired || nudged) console.log(`[worker] fired ${fired} reminder(s), sent ${nudged} nudge(s)`);
+    const { fired, nudged, spawned } = await runWorkerOnce(db, dispatcher);
+    if (fired || nudged || spawned)
+      console.log(
+        `[worker] fired ${fired} reminder(s), sent ${nudged} nudge(s), spawned ${spawned} occurrence(s)`
+      );
   } catch (err) {
     console.error("[worker] tick failed:", err);
   }

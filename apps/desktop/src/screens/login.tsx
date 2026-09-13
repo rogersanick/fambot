@@ -6,11 +6,11 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/submit-button";
 import { Typewriter } from "@/components/ascii/typewriter";
-import { FAMBOT_BANNER } from "@/components/ascii/banner";
+import { FambotLogo } from "@/components/robot/logo";
 import { api } from "@/lib/api";
 import { signIn, signUp } from "@/lib/auth";
 
-export function LoginScreen() {
+export function LoginScreen({ inviteMode = false }: { inviteMode?: boolean }) {
   const [signup, setSignup] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -43,13 +43,7 @@ export function LoginScreen() {
   return (
     <main className="flex min-h-svh flex-col items-center justify-center gap-6 p-6">
       <div className="animate-fade-up flex flex-col items-center gap-2">
-        <pre
-          className="text-primary text-[6px] leading-[1.15] font-bold select-none sm:text-[8px]"
-          aria-label="FamBot"
-          role="img"
-        >
-          {FAMBOT_BANNER}
-        </pre>
+        <FambotLogo className="text-primary h-10 sm:h-12" />
         <Typewriter
           lines={["> your household's shared brain"]}
           className="text-muted-foreground text-xs"
@@ -62,7 +56,11 @@ export function LoginScreen() {
             {signup ? "Create your FamBot account" : "Sign in to FamBot"}
           </CardTitle>
           <CardDescription>
-            {signup ? "One account per family member." : "Your household's shared brain."}
+            {inviteMode
+              ? "Sign in or create an account to accept your household invitation."
+              : signup
+                ? "One account per family member."
+                : "Your household's shared brain."}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -72,7 +70,7 @@ export function LoginScreen() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => signIn.social({ provider: "google", callbackURL: window.location.origin })}
+                  onClick={() => signIn.social({ provider: "google", callbackURL: window.location.href })}
                 >
                   Continue with Google
                 </Button>

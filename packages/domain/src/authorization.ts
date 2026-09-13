@@ -36,8 +36,15 @@ export function authorizeAction(actor: Actor, action: ProposedAction): AuthzResu
     case "cancel_task":
     case "create_list":
     case "rename_list":
+    case "add_list_items":
+    case "update_list_item":
+    case "set_list_item_completed":
+    case "delete_list_item":
+    case "get_list":
     case "create_event":
     case "search_schedule":
+    case "add_comment":
+    case "get_comment_status":
     case "clarify":
     case "chat_reply":
       return { ok: true };
