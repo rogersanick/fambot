@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RobotEmptyState } from "@/components/robot/scenes";
 import { TaskChart, type TaskChartDatum } from "./task-chart";
+import { ArtifactLink } from "./artifact-link";
+import { ArtifactLinkChips, type LinkedArtifact } from "./artifact-links";
 import { cn } from "@/lib/utils";
 
 export type WeekDay = {
@@ -15,22 +17,24 @@ export type WeekDay = {
 
 export type TimelineItem = {
   id: string;
-  kind: "event" | "reminder" | "todo";
+  kind: "event" | "task";
   title: string;
   when: string;
   detail?: string;
+  /** Event description/body — distinct from associated reminders/lists. */
+  body?: string;
   /** YYYY-MM-DD in the household timezone; matches WeekDay.key. */
   day: string;
+  links?: LinkedArtifact[];
 };
 
 const KIND_DOT: Record<TimelineItem["kind"], string> = {
   event: "bg-chart-4",
-  reminder: "bg-chart-2",
-  todo: "bg-chart-1",
+  task: "bg-chart-1",
 };
 
 export type OverviewStats = {
-  openTodos: number;
+  openTasks: number;
   overdue: number;
   eventsThisWeek: number;
   pendingReminders: number;
@@ -38,6 +42,7 @@ export type OverviewStats = {
 };
 
 type OverviewTabProps = {
+  householdId: string;
   stats: OverviewStats;
   /** Completed-task counts for the last 7 days, oldest first. */
   completionSpark: number[];
@@ -83,7 +88,7 @@ function StatCard({
       <CardContent className="flex items-end justify-between px-4">
         <div>
           <p className="text-muted-foreground text-xs tracking-wide uppercase">{label}</p>
-          <p className={cn("font-serif text-3xl", alert && value > 0 && "text-destructive")}>{value}</p>
+          <p className={cn("font-serif text-2xl md:text-3xl", alert && value > 0 && "text-destructive")}>{value}</p>
           <p className="text-muted-foreground mt-0.5 text-xs">{footnote}</p>
         </div>
         {spark}
@@ -99,7 +104,15 @@ function heatColor(count: number): string {
   return `color-mix(in oklab, var(--primary) ${pct}%, var(--muted))`;
 }
 
-export function OverviewTab({ stats, completionSpark, eventSpark, taskChartData, week, timeline }: OverviewTabProps) {
+export function OverviewTab({
+  householdId,
+  stats,
+  completionSpark,
+  eventSpark,
+  taskChartData,
+  week,
+  timeline,
+}: OverviewTabProps) {
   const hasTasks = taskChartData.some((d) => d.open + d.done > 0);
   /** Day key selected in "The week ahead"; null = show the whole week. */
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
@@ -109,8 +122,8 @@ export function OverviewTab({ stats, completionSpark, eventSpark, taskChartData,
     <div className="grid gap-4">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Open todos"
-          value={stats.openTodos}
+          label="Open tasks"
+          value={stats.openTasks}
           footnote={`${stats.doneThisWeek} done this week`}
           spark={<Sparkline counts={completionSpark} colorClass="bg-chart-1" />}
           delay={0}
@@ -141,7 +154,7 @@ export function OverviewTab({ stats, completionSpark, eventSpark, taskChartData,
             {hasTasks ? (
               <TaskChart data={taskChartData} />
             ) : (
-              <RobotEmptyState variant="painting" caption="No tasks yet — plant one." />
+              <RobotEmptyState caption="No tasks yet — plant one." />
             )}
           </CardContent>
         </Card>
@@ -176,7 +189,7 @@ export function OverviewTab({ stats, completionSpark, eventSpark, taskChartData,
               ))}
             </div>
             <p className="text-muted-foreground mt-3 text-xs">
-              Events and due todos per day — darker means busier. Click a day to filter the list below.
+              Events and due tasks per day — darker means busier. Click a day to filter the list below.
             </p>
           </CardContent>
         </Card>
@@ -198,7 +211,6 @@ export function OverviewTab({ stats, completionSpark, eventSpark, taskChartData,
         <CardContent>
           {visibleTimeline.length === 0 ? (
             <RobotEmptyState
-              variant="hiking"
               caption={
                 selected
                   ? `Nothing scheduled for ${selected.label} ${selected.dayNum}.`
@@ -218,12 +230,24 @@ export function OverviewTab({ stats, completionSpark, eventSpark, taskChartData,
                   />
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
                     <span className="text-muted-foreground w-36 shrink-0 text-xs">{item.when}</span>
-                    <span className="text-sm">{item.title}</span>
+                    <ArtifactLink
+                      type={item.kind}
+                      id={item.id}
+                      className="text-sm"
+                    >
+                      {item.title}
+                    </ArtifactLink>
                     {item.detail && <span className="text-muted-foreground text-xs">{item.detail}</span>}
                     <span className="text-muted-foreground/70 ml-auto font-mono text-[10px] uppercase">
                       {item.kind}
                     </span>
                   </div>
+                  {item.body && (
+                    <p className="text-muted-foreground mt-0.5 text-sm whitespace-pre-wrap sm:pl-[9.5rem]">
+                      {item.body}
+                    </p>
+                  )}
+                  <ArtifactLinkChips householdId={householdId} links={item.links ?? []} className="mt-1 pl-[9.5rem]" />
                 </div>
               ))}
             </div>

@@ -79,16 +79,33 @@ async function fixture() {
   return { household: household!, member: member!, conversation: conv!, phone };
 }
 
+async function parentTask(f: Awaited<ReturnType<typeof fixture>>, title = "parent task") {
+  const [task] = await db
+    .insert(tasks)
+    .values({
+      householdId: f.household.id,
+      creatorMemberId: f.member.id,
+      conversationId: f.conversation.id,
+      title,
+      status: "open",
+    })
+    .returning();
+  return task!;
+}
+
 describe("worker loops (integration)", () => {
   test("due reminder fires exactly once over SMS, then one-shot goes done — never app chat", async () => {
     if (!available) return;
-    const { household, member, conversation, phone } = await fixture();
+    const f = await fixture();
+    const { household, member, conversation, phone } = f;
+    const task = await parentTask(f, "one-shot");
     const [reminder] = await db
       .insert(reminders)
       .values({
         householdId: household.id,
         creatorMemberId: member.id,
         title: "one-shot",
+        taskId: task.id,
         targetType: "conversation",
         targetConversationId: conversation.id,
         fireAt: new Date(Date.now() - 1000),
@@ -124,13 +141,16 @@ describe("worker loops (integration)", () => {
 
   test("recurring reminder schedules the next occurrence after firing", async () => {
     if (!available) return;
-    const { household, member, conversation } = await fixture();
+    const f = await fixture();
+    const { household, member, conversation } = f;
+    const task = await parentTask(f, "weekly sync");
     const [reminder] = await db
       .insert(reminders)
       .values({
         householdId: household.id,
         creatorMemberId: member.id,
         title: "weekly sync",
+        taskId: task.id,
         targetType: "conversation",
         targetConversationId: conversation.id,
         fireAt: new Date(Date.now() - 1000),
@@ -149,14 +169,17 @@ describe("worker loops (integration)", () => {
 
   test("member without a phone yields an explicit skipped delivery, not a web-chat fallback", async () => {
     if (!available) return;
-    const { household, member, conversation } = await fixture();
+    const f = await fixture();
+    const { household, member, conversation } = f;
     await db.delete(identities).where(eq(identities.memberId, member.id));
+    const task = await parentTask(f, "phoneless");
     const [reminder] = await db
       .insert(reminders)
       .values({
         householdId: household.id,
         creatorMemberId: member.id,
         title: "phoneless",
+        taskId: task.id,
         targetType: "member",
         targetMemberId: member.id,
         fireAt: new Date(Date.now() - 1000),
@@ -178,7 +201,7 @@ describe("worker loops (integration)", () => {
     expect(appChat).toHaveLength(0);
   });
 
-  test("task nudges repeat on the nag interval, record deliveries, and link the SMS conversation", async () => {
+  test("until-completed task reminders fire, record deliveries, and stop when the task is done", async () => {
     if (!available) return;
     const { household, member, conversation, phone } = await fixture();
     const [task] = await db
@@ -189,23 +212,36 @@ describe("worker loops (integration)", () => {
         conversationId: conversation.id,
         title: "sign the permission slip",
         dueAt: new Date(Date.now() - 1000),
-        nextNudgeAt: new Date(Date.now() - 1000),
-        nagIntervalMin: 30,
         timezone: household.timezone,
         status: "open",
+      })
+      .returning();
+    const [reminder] = await db
+      .insert(reminders)
+      .values({
+        householdId: household.id,
+        creatorMemberId: member.id,
+        title: "sign the permission slip",
+        taskId: task!.id,
+        targetType: "member",
+        targetMemberId: member.id,
+        fireAt: new Date(Date.now() - 1000),
+        nextFireAt: new Date(Date.now() - 1000),
+        rrule: "FREQ=MINUTELY;INTERVAL=30",
+        timezone: household.timezone,
+        untilCompleted: true,
+        status: "scheduled",
       })
       .returning();
 
     const { notifier, smsSent } = makeNotifier();
     await runWorkerOnce(db, notifier);
-    await runWorkerOnce(db, notifier); // not due again yet — must not double-nudge
+    await runWorkerOnce(db, notifier); // next fire is ~30 min out — must not double-send
 
     const nudges = smsSent.filter((s) => s.to === phone);
     expect(nudges).toHaveLength(1);
     expect(nudges[0]!.text).toContain("Still open: sign the permission slip");
 
-    // Delivery links the member's SMS conversation, so a bare SMS "done"
-    // resolves via tasks.lastNudged.
     const [delivery] = await db.select().from(deliveries).where(eq(deliveries.taskId, task!.id));
     expect(delivery!.conversationId).toBeTruthy();
     const [smsConv] = await db
@@ -218,16 +254,16 @@ describe("worker loops (integration)", () => {
     const nudged = await services.tasks.lastNudged(household.id, smsConv!.id);
     expect(nudged?.id).toBe(task!.id);
 
-    const [after] = await db.select().from(tasks).where(eq(tasks.id, task!.id));
-    // Next nudge is ~30 minutes out
-    const delta = after!.nextNudgeAt!.getTime() - Date.now();
+    const [after] = await db.select().from(reminders).where(eq(reminders.id, reminder!.id));
+    const delta = after!.nextFireAt!.getTime() - Date.now();
     expect(delta).toBeGreaterThan(25 * 60_000);
     expect(delta).toBeLessThan(35 * 60_000);
 
-    // Completing stops the nagging
-    await db.update(tasks).set({ status: "done", nextNudgeAt: null }).where(eq(tasks.id, task!.id));
+    await services.tasks.complete(task!.id);
     await runWorkerOnce(db, notifier);
     expect(smsSent.filter((s) => s.to === phone)).toHaveLength(1);
+    const [stopped] = await db.select().from(reminders).where(eq(reminders.id, reminder!.id));
+    expect(stopped!.status).toBe("cancelled");
   });
 
   // --- recurring task series ------------------------------------------------
@@ -246,7 +282,6 @@ describe("worker loops (integration)", () => {
         rrule: opts.rrule,
         timezone: f.household.timezone,
         anchorAt: opts.anchorAt,
-        nagIntervalMin: 30,
         nextOccurrenceAt: opts.nextOccurrenceAt ?? opts.anchorAt,
         status: "active",
       })
@@ -268,7 +303,6 @@ describe("worker loops (integration)", () => {
       conversationId: f.conversation.id,
       title: "water the plants",
       dueAt: lastWeek,
-      nextNudgeAt: lastWeek,
       timezone: f.household.timezone,
       seriesId: series.id,
       scheduledFor: lastWeek,
@@ -282,7 +316,6 @@ describe("worker loops (integration)", () => {
     const spawned = rows.find((t) => t.scheduledFor?.getTime() === anchor.getTime());
     expect(spawned).toBeDefined();
     expect(spawned!.dueAt!.getTime()).toBe(anchor.getTime());
-    expect(spawned!.nextNudgeAt).not.toBeNull();
 
     // Cursor advanced to next week's slot.
     const [after] = await db.select().from(taskSeries).where(eq(taskSeries.id, series.id));
@@ -343,7 +376,6 @@ describe("worker loops (integration)", () => {
     const before = await db.select().from(tasks).where(eq(tasks.seriesId, series.id));
     const done = await services.tasks.complete(task.id);
     expect(done!.status).toBe("done");
-    expect(done!.nextNudgeAt).toBeNull();
 
     const after = await db.select().from(tasks).where(eq(tasks.seriesId, series.id));
     expect(after).toHaveLength(before.length); // no respawned row
@@ -368,38 +400,27 @@ describe("worker loops (integration)", () => {
     });
 
     const newDue = new Date(Date.now() + 3 * 3_600_000);
-    await services.tasks.update(task.id, { dueAt: newDue, nextNudgeAt: newDue });
+    await services.tasks.update(task.id, { dueAt: newDue });
 
     const [after] = await db.select().from(tasks).where(eq(tasks.id, task.id));
     expect(after!.dueAt!.getTime()).toBe(newDue.getTime());
-    expect(after!.nextNudgeAt!.getTime()).toBe(newDue.getTime());
     expect(after!.scheduledFor!.getTime()).toBe(anchor.getTime()); // slot unchanged
 
     const [s] = await db.select().from(taskSeries).where(eq(taskSeries.id, series.id));
     expect(s!.nextOccurrenceAt!.getTime()).toBeGreaterThan(Date.now()); // schedule unchanged
   });
 
-  test("spawned occurrence is nudged on its cadence in the same pass and keeps nagging until done", async () => {
+  test("spawned occurrences do not auto-nag", async () => {
     if (!available) return;
     const f = await fixture();
     const anchor = new Date(Date.now() - 1000);
     const series = await seriesFixture(f, { rrule: "FREQ=DAILY;COUNT=1", anchorAt: anchor });
 
     const { notifier, smsSent } = makeNotifier();
-    await runWorkerOnce(db, notifier); // spawns, then nudges the fresh occurrence
-    const nudges = smsSent.filter((s) => s.to === f.phone);
-    expect(nudges).toHaveLength(1);
-    expect(nudges[0]!.text).toContain("Still open: water the plants");
-
-    const [occ] = await db.select().from(tasks).where(eq(tasks.seriesId, series.id));
-    // Next nudge honors the series' 30-minute cadence.
-    const delta = occ!.nextNudgeAt!.getTime() - Date.now();
-    expect(delta).toBeGreaterThan(25 * 60_000);
-    expect(delta).toBeLessThan(35 * 60_000);
-
-    // Second pass before the cadence elapses: no double nudge.
     await runWorkerOnce(db, notifier);
-    expect(smsSent.filter((s) => s.to === f.phone)).toHaveLength(1);
+    expect(smsSent.filter((s) => s.to === f.phone)).toHaveLength(0);
+    const [occ] = await db.select().from(tasks).where(eq(tasks.seriesId, series.id));
+    expect(occ).toBeDefined();
   });
 
   test("cancelling a series stops generation and cancels its open occurrences", async () => {
@@ -423,7 +444,6 @@ describe("worker loops (integration)", () => {
     expect(s!.nextOccurrenceAt).toBeNull();
     const [occ] = await db.select().from(tasks).where(eq(tasks.id, task.id));
     expect(occ!.status).toBe("cancelled");
-    expect(occ!.nextNudgeAt).toBeNull();
 
     // Worker no longer touches the cancelled series.
     const { notifier, smsSent } = makeNotifier();

@@ -6,6 +6,7 @@ const base = {
   startsAt: new Date("2026-09-10T21:00:00.000Z"),
   endsAt: new Date("2026-09-10T22:00:00.000Z"),
   location: "Field 3",
+  notes: "Bring shin guards and water.",
   timezone: "America/New_York",
   rrule: null as string | null,
 };
@@ -16,6 +17,7 @@ describe("buildGoogleEventPayload", () => {
     expect(p).toEqual({
       summary: "Soccer practice",
       location: "Field 3",
+      description: "Bring shin guards and water.",
       start: { dateTime: "2026-09-10T21:00:00.000Z", timeZone: "America/New_York" },
       end: { dateTime: "2026-09-10T22:00:00.000Z", timeZone: "America/New_York" },
     });
@@ -30,6 +32,11 @@ describe("buildGoogleEventPayload", () => {
   test("an existing RRULE: prefix is not doubled", () => {
     const p = buildGoogleEventPayload({ ...base, rrule: "RRULE:FREQ=DAILY;COUNT=5" });
     expect(p.recurrence).toEqual(["RRULE:FREQ=DAILY;COUNT=5"]);
+  });
+
+  test("null notes omit description", () => {
+    const p = buildGoogleEventPayload({ ...base, notes: null });
+    expect("description" in p).toBe(false);
   });
 
   test("missing end defaults to one hour", () => {

@@ -1,9 +1,9 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * Fambot empty-state scenes: the robot earnestly attempts human hobbies
- * (painting, boxing, juggling, hiking, fishing) and fumbles them a little.
+ * Fambot empty-state scenes: the robot competes in Olympic sports,
+ * one event at a time, picked at random.
  *
  * Styled like ASCII art — every shape is a monospace glyph on a 6px column
  * grid — but rendered as SVG so motion is smooth. Animation is strictly rigid
@@ -12,9 +12,22 @@ import { cn } from "@/lib/utils";
  * pauses under prefers-reduced-motion.
  */
 
-export type RobotSceneVariant = "painting" | "boxing" | "juggling" | "hiking" | "fishing";
+export const ROBOT_SCENE_VARIANTS = [
+  "sprint",
+  "swimming",
+  "gymnastics",
+  "weightlifting",
+  "archery",
+  "fencing",
+  "skateboarding",
+  "diving",
+  "tabletennis",
+] as const;
+
+export type RobotSceneVariant = (typeof ROBOT_SCENE_VARIANTS)[number];
 
 const MONO = 'var(--font-mono, "Fira Code", ui-monospace, monospace)';
+const SCENE_MS = 8000;
 
 type TProps = { x: number; y: number; s: string; className?: string; fill?: string };
 
@@ -34,6 +47,15 @@ const SHARED_CSS = `
 .fbg-shut{animation:fbg-shut 4.4s infinite;opacity:0}
 @media (prefers-reduced-motion: reduce){.fb-scene *{animation:none!important}}
 `;
+
+function SceneShell({ css, children }: { css: string; children: ReactNode }) {
+  return (
+    <svg viewBox="0 0 160 100" width="190" className="fb-scene overflow-visible" aria-hidden>
+      <style>{`${SHARED_CSS}${css}`}</style>
+      {children}
+    </svg>
+  );
+}
 
 /**
  * The glyph robot, feet on y=88. `x` is the head's center column. Arms are
@@ -66,267 +88,649 @@ function Ground({ from = 4, cols = 25 }: { from?: number; cols?: number }) {
   return <T x={from} y={92} s={"─".repeat(cols)} className="opacity-40" />;
 }
 
-/** Painting a self-portrait; a drip runs off the canvas mid-masterpiece. */
-function PaintingScene() {
+function pickRandomScene(exclude?: RobotSceneVariant): RobotSceneVariant {
+  const pool = exclude ? ROBOT_SCENE_VARIANTS.filter((v) => v !== exclude) : ROBOT_SCENE_VARIANTS;
+  return pool[Math.floor(Math.random() * pool.length)]!;
+}
+
+/** 100m dash — crouched on the blocks until the gun, then a messy sprint. */
+function SprintScene() {
   return (
-    <svg viewBox="0 0 160 100" width="190" className="fb-scene" aria-hidden>
-      <style>{`${SHARED_CSS}
-.fbp-arm{animation:fbp-arm 7s ease-in-out infinite;transform-origin:63px 58px}
-@keyframes fbp-arm{0%,4%,12%,20%,70%,78%,100%{transform:rotate(0)}8%,16%,74%{transform:rotate(-14deg)}}
-.fbp-eyes{animation:fbp-eyes 7s infinite;opacity:0}
-@keyframes fbp-eyes{0%,9%{opacity:0}11%,100%{opacity:1}}
-.fbp-smile{animation:fbp-smile 7s infinite;opacity:0}
-@keyframes fbp-smile{0%,17%{opacity:0}19%,100%{opacity:1}}
-.fbp-drip{animation:fbp-drip 7s linear infinite;opacity:0}
-@keyframes fbp-drip{0%,30%{opacity:0;transform:translateY(0)}33%{opacity:1}44%{opacity:1;transform:translateY(26px)}46%,100%{opacity:0;transform:translateY(26px)}}
-.fbp-splat{animation:fbp-splat 7s infinite;opacity:0}
-@keyframes fbp-splat{0%,44%,97%,100%{opacity:0}47%,92%{opacity:1}}
-.fbp-oops{animation:fbp-oops 7s infinite;opacity:0}
-@keyframes fbp-oops{0%,48%,68%,100%{opacity:0}52%,64%{opacity:1}}`}</style>
-      <Ground />
-      {/* easel + canvas */}
-      <T x={100} y={34} s="┌─────┐" />
-      <T x={100} y={44} s="│" />
-      <T x={136} y={44} s="│" />
-      <T x={100} y={54} s="│" />
-      <T x={136} y={54} s="│" />
-      <T x={100} y={64} s="└─────┘" />
-      <T x={103} y={76} s="╱" />
-      <T x={133} y={76} s="╲" />
-      <T x={100} y={88} s="╱" />
-      <T x={136} y={88} s="╲" />
-      {/* the portrait, painted stroke by stroke */}
-      <T x={109} y={46} s="o o" className="fbp-eyes" fill="var(--primary)" />
-      <T x={112} y={55} s="‿" className="fbp-smile" fill="var(--primary)" />
-      {/* the runaway drip */}
-      <T x={106} y={60} s="," className="fbp-drip" fill="var(--primary)" />
-      <T x={104} y={90} s="꞉" className="fbp-splat" fill="var(--primary)" />
-      <T x={66} y={38} s="!" className="fbp-oops" fill="var(--primary)" />
-      <GlyphBot x={48} />
-      {/* brush arm */}
-      <g className="fbp-arm">
-        <T x={63} y={62} s="─╱" />
-        <T x={75} y={54} s="·" fill="var(--primary)" />
+    <SceneShell
+      css={`
+.fbsp-set{animation:fbsp-set 6.6s ease-in-out infinite;transform-origin:78px 88px}
+@keyframes fbsp-set{0%,18%{transform:rotate(28deg) translate(6px,3px)}26%,100%{transform:rotate(0) translate(0,0)}}
+.fbsp-bob{animation:fbsp-bob 6.6s ease-in-out infinite}
+@keyframes fbsp-bob{0%,24%{transform:translateY(0)}28%,32%,36%,40%,44%,48%,52%,56%,60%,64%,68%,72%,76%,80%,84%,88%,92%{transform:translateY(-3px)}30%,34%,38%,42%,46%,50%,54%,58%,62%,66%,70%,74%,78%,82%,86%,90%,94%,100%{transform:translateY(0)}}
+.fbsp-crouch{animation:fbsp-crouch 6.6s infinite}
+@keyframes fbsp-crouch{0%,20%{opacity:1}24%,100%{opacity:0}}
+.fbsp-run{animation:fbsp-run 6.6s infinite;opacity:0}
+@keyframes fbsp-run{0%,22%{opacity:0}26%,100%{opacity:1}}
+.fbsp-legA{animation:fbsp-legA .28s steps(1) infinite}
+@keyframes fbsp-legA{0%,100%{opacity:1}50%{opacity:0}}
+.fbsp-legB{animation:fbsp-legB .28s steps(1) infinite;opacity:0}
+@keyframes fbsp-legB{0%,100%{opacity:0}50%{opacity:1}}
+.fbsp-armL{animation:fbsp-armL .28s ease-in-out infinite;transform-origin:63px 58px}
+@keyframes fbsp-armL{0%,100%{transform:rotate(-28deg)}50%{transform:rotate(18deg)}}
+.fbsp-armR{animation:fbsp-armR .28s ease-in-out infinite;transform-origin:93px 58px}
+@keyframes fbsp-armR{0%,100%{transform:rotate(18deg)}50%{transform:rotate(-28deg)}}
+.fbsp-track{animation:fbsp-track 6.6s linear infinite}
+@keyframes fbsp-track{0%,22%{transform:translateX(0)}100%{transform:translateX(-160px)}}
+.fbsp-tape{animation:fbsp-tape 6.6s linear infinite;transform-origin:148px 50px}
+@keyframes fbsp-tape{0%,70%{transform:translateX(0) rotate(0);opacity:1}86%{transform:translateX(-70px) rotate(0);opacity:1}90%{transform:translateX(-78px) rotate(55deg);opacity:.4}94%,100%{opacity:0;transform:translateX(-78px) rotate(70deg)}}
+.fbsp-flash{animation:fbsp-flash 6.6s infinite;opacity:0}
+@keyframes fbsp-flash{0%,18%,32%,100%{opacity:0}20%,28%{opacity:1}}
+.fbsp-smoke{animation:fbsp-smoke 6.6s ease-out infinite;opacity:0}
+@keyframes fbsp-smoke{0%,19%{opacity:0;transform:translate(0,0)}21%{opacity:1;transform:translate(4px,-6px)}28%{opacity:0;transform:translate(8px,-14px)}100%{opacity:0}}
+.fbsp-bg{animation:fbsp-track 6.6s linear infinite}
+.fbsp-gun{animation:fbsp-gun 6.6s ease-in-out infinite;transform-origin:32px 58px}
+@keyframes fbsp-gun{0%,18%{transform:rotate(-58deg)}21%{transform:rotate(-78deg)}28%,100%{transform:rotate(-48deg)}}
+.fbsp-kick{animation:fbsp-kick 6.6s ease-in-out infinite;transform-origin:16px 88px}
+@keyframes fbsp-kick{0%,18%,30%,100%{transform:rotate(0)}21%,24%{transform:rotate(-7deg)}}`}
+    >
+      <g className="fbsp-track">
+        <T x={-20} y={92} s={"═  ".repeat(16)} className="opacity-35" />
+        <T x={-8} y={96} s={"═  ".repeat(16)} className="opacity-25" />
       </g>
-    </svg>
+      <g className="fbsp-tape">
+        <T x={142} y={48} s="┃" />
+        <T x={136} y={58} s="══" fill="var(--primary)" />
+        <T x={142} y={68} s="┃" />
+      </g>
+      {/* official — background character, scrolls off once the race starts */}
+      <g className="fbsp-bg">
+        <g className="fbsp-kick">
+          <T x={2} y={40} s="╭─┴─╮" className="opacity-45" />
+          <T x={2} y={50} s="│ o │" className="opacity-45" />
+          <T x={2} y={60} s="├───┤" className="opacity-45" />
+          <T x={2} y={70} s="│   │" className="opacity-45" />
+          <T x={2} y={80} s="╰┬─┬╯" className="opacity-45" />
+          <T x={8} y={88} s="╱ ╲" className="opacity-45" />
+          <g className="fbsp-gun">
+            <T x={32} y={58} s="──" className="opacity-45" />
+            <T x={44} y={58} s="═o" className="opacity-55" />
+            <T x={56} y={54} s="*" className="fbsp-flash" fill="var(--primary)" />
+            <T x={53} y={46} s="˚" className="fbsp-smoke" fill="var(--primary)" />
+          </g>
+        </g>
+        <T x={46} y={22} s="BANG" className="fbsp-flash" fill="var(--primary)" />
+        <T x={58} y={90} s="▁" className="opacity-40" />
+        <T x={82} y={90} s="▁" className="opacity-40" />
+      </g>
+      <g className="fbsp-set">
+        <g className="fbsp-bob">
+          <GlyphBot
+            x={78}
+            legs={
+              <>
+                <T x={69} y={88} s="╭ ╲" className="fbsp-crouch" />
+                <g className="fbsp-run">
+                  <T x={69} y={88} s="╱ ╲" className="fbsp-legA" />
+                  <T x={69} y={88} s="│ ╱" className="fbsp-legB" />
+                </g>
+              </>
+            }
+          />
+          <g className="fbsp-crouch">
+            <T x={57} y={78} s="╲" />
+            <T x={51} y={88} s="▾" />
+            <T x={93} y={72} s="─" />
+          </g>
+          <g className="fbsp-run">
+            <g className="fbsp-armL">
+              <T x={57} y={62} s="╱" />
+            </g>
+            <g className="fbsp-armR">
+              <T x={93} y={62} s="╲" />
+            </g>
+          </g>
+        </g>
+      </g>
+    </SceneShell>
   );
 }
 
-/** One good jab — then the bag swings back and bonks him. */
-function BoxingScene() {
+/** Pool length — robot on its side, freestyle, one stiff lap at a time. */
+function SwimmingScene() {
   return (
-    <svg viewBox="0 0 160 100" width="190" className="fb-scene" aria-hidden>
-      <style>{`${SHARED_CSS}
-.fbb-bag{animation:fbb-bag 5.6s ease-in-out infinite;transform-origin:121px 12px}
-@keyframes fbb-bag{0%,12%{transform:rotate(0)}20%{transform:rotate(18deg)}32%{transform:rotate(-13deg)}42%{transform:rotate(7deg)}52%,100%{transform:rotate(0)}}
-.fbb-jab{animation:fbb-jab 5.6s ease-in-out infinite}
-@keyframes fbb-jab{0%,10%,22%,100%{transform:translateX(0)}14%,17%{transform:translateX(9px)}}
-.fbb-bot{animation:fbb-bot 5.6s ease-in-out infinite;transform-origin:44px 88px}
-@keyframes fbb-bot{0%,29%,54%,100%{transform:translateX(0) rotate(0)}33%,44%{transform:translateX(-6px) rotate(-7deg)}}
-.fbb-ok{animation:fbb-ok 5.6s infinite}
-@keyframes fbb-ok{0%,31%,57%,100%{opacity:1}33%,55%{opacity:0}}
-.fbb-ko{animation:fbb-ko 5.6s infinite;opacity:0}
-@keyframes fbb-ko{0%,31%,57%,100%{opacity:0}33%,55%{opacity:1}}
-.fbb-stars{animation:fbb-stars 5.6s infinite;opacity:0}
-@keyframes fbb-stars{0%,32%,58%,100%{opacity:0}36%,52%{opacity:1}}`}</style>
-      <Ground />
-      {/* mount + bag */}
-      <T x={100} y={10} s="─────────" className="opacity-40" />
-      <g className="fbb-bag">
-        <T x={118} y={18} s="╥" />
-        <T x={112} y={28} s="▐█▌" />
-        <T x={112} y={38} s="▐█▌" />
-        <T x={112} y={48} s="▐█▌" />
+    <SceneShell
+      css={`
+.fbsw-lane{animation:fbsw-lane 1.6s linear infinite}
+@keyframes fbsw-lane{0%{transform:translateX(0)}100%{transform:translateX(-18px)}}
+.fbsw-lap{animation:fbsw-lap 6.8s linear infinite}
+@keyframes fbsw-lap{
+  0%,6%{transform:translateX(8px);opacity:1}
+  82%{transform:translateX(48px);opacity:1}
+  88%{transform:translateX(52px);opacity:0}
+  90%{transform:translateX(8px);opacity:0}
+  94%,100%{transform:translateX(8px);opacity:1}}
+.fbsw-side{transform:rotate(90deg);transform-origin:48px 58px}
+.fbsw-bob{animation:fbsw-bob .9s ease-in-out infinite}
+@keyframes fbsw-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(3px)}}
+.fbsw-armA{animation:fbsw-armA .9s ease-in-out infinite;transform-origin:63px 58px}
+@keyframes fbsw-armA{0%{transform:rotate(80deg)}50%{transform:rotate(-70deg)}100%{transform:rotate(80deg)}}
+.fbsw-armB{animation:fbsw-armB .9s ease-in-out infinite;transform-origin:33px 58px}
+@keyframes fbsw-armB{0%{transform:rotate(-70deg)}50%{transform:rotate(80deg)}100%{transform:rotate(-70deg)}}
+.fbsw-kickA{animation:fbsw-kickA .28s steps(1) infinite}
+@keyframes fbsw-kickA{0%,100%{opacity:1}50%{opacity:0}}
+.fbsw-kickB{animation:fbsw-kickB .28s steps(1) infinite;opacity:0}
+@keyframes fbsw-kickB{0%,100%{opacity:0}50%{opacity:1}}
+.fbsw-bub{animation:fbsw-bub .9s ease-in-out infinite}
+@keyframes fbsw-bub{0%,100%{opacity:.35;transform:translate(0,0)}50%{opacity:1;transform:translate(-4px,-2px)}}`}
+    >
+      <defs>
+        <clipPath id="fbsw-pool">
+          <rect x="10" y="16" width="140" height="74" />
+        </clipPath>
+      </defs>
+      <T x={4} y={14} s="┌────────────────────────┐" className="opacity-40" />
+      <T x={4} y={24} s="│" className="opacity-40" />
+      <T x={148} y={24} s="│" className="opacity-40" />
+      <T x={4} y={40} s="│" className="opacity-40" />
+      <T x={148} y={40} s="│" className="opacity-40" />
+      <T x={4} y={56} s="│" className="opacity-40" />
+      <T x={148} y={56} s="│" className="opacity-40" />
+      <T x={4} y={72} s="│" className="opacity-40" />
+      <T x={148} y={72} s="│" className="opacity-40" />
+      <T x={4} y={88} s="└────────────────────────┘" className="opacity-40" />
+      <g clipPath="url(#fbsw-pool)">
+        <g className="fbsw-lane">
+          <T x={-12} y={26} s={"· · ".repeat(14)} className="opacity-30" />
+        </g>
+        <T x={10} y={40} s="~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~" className="opacity-35" />
+        <T x={10} y={56} s="≈  ≈  ≈  ≈  ≈  ≈  ≈" className="opacity-30" />
+        <T x={16} y={72} s="≈  ≈  ≈  ≈  ≈  ≈  ≈" className="opacity-25" />
+        <g className="fbsw-lap">
+          <g className="fbsw-bob">
+            <g className="fbsw-side">
+              <GlyphBot
+                x={48}
+                eyes={<T x={39} y={50} s="> <" />}
+                legs={
+                  <>
+                    <T x={39} y={88} s="~ ~" className="fbsw-kickA" fill="var(--primary)" />
+                    <T x={39} y={88} s="≈ ≈" className="fbsw-kickB" fill="var(--primary)" />
+                  </>
+                }
+              />
+              <g className="fbsw-armA">
+                <T x={63} y={60} s="─╯" />
+              </g>
+              <g className="fbsw-armB">
+                <T x={21} y={60} s="╰─" />
+              </g>
+              <T x={20} y={84} s="˚˚" className="fbsw-bub" fill="var(--primary)" />
+            </g>
+          </g>
+        </g>
       </g>
-      <g className="fbb-bot">
+    </SceneShell>
+  );
+}
+
+/** Vault — a clean run-up, one rotation over the horse, a stuck landing. */
+function GymnasticsScene() {
+  return (
+    <SceneShell
+      css={`
+.fbgy-bot{animation:fbgy-bot 7.2s linear infinite;transform-origin:32px 58px}
+@keyframes fbgy-bot{
+  0%{transform:translate(-40px,0) rotate(0);opacity:0}
+  5%{transform:translate(-40px,0) rotate(0);opacity:1}
+  10%{transform:translate(-18px,0) rotate(0);opacity:1}
+  16%{transform:translate(-2px,0) rotate(0)}
+  22%{transform:translate(12px,0) rotate(0)}
+  28%{transform:translate(24px,0) rotate(0)}
+  32%{transform:translate(30px,3px) rotate(-6deg)}
+  38%{transform:translate(40px,-16px) rotate(-40deg)}
+  44%{transform:translate(52px,-38px) rotate(-100deg)}
+  50%{transform:translate(64px,-50px) rotate(-160deg)}
+  56%{transform:translate(76px,-52px) rotate(-220deg)}
+  62%{transform:translate(88px,-38px) rotate(-280deg)}
+  68%{transform:translate(98px,-16px) rotate(-330deg)}
+  74%{transform:translate(104px,0) rotate(-360deg)}
+  80%{transform:translate(104px,0) rotate(-360deg)}
+  88%{transform:translate(132px,0) rotate(-360deg);opacity:1}
+  93%{transform:translate(158px,0) rotate(-360deg);opacity:0}
+  94%{transform:translate(-40px,0) rotate(0);opacity:0}
+  100%{transform:translate(-40px,0) rotate(0);opacity:0}}
+.fbgy-legA{animation:fbgy-legA .32s steps(1) infinite}
+@keyframes fbgy-legA{0%,100%{opacity:1}50%{opacity:0}}
+.fbgy-legB{animation:fbgy-legB .32s steps(1) infinite;opacity:0}
+@keyframes fbgy-legB{0%,100%{opacity:0}50%{opacity:1}}
+.fbgy-arms{animation:fbgy-arms 7.2s infinite}
+@keyframes fbgy-arms{0%,73%,82%,100%{opacity:0}76%,80%{opacity:1}}
+.fbgy-run{animation:fbgy-run 7.2s infinite}
+@keyframes fbgy-run{0%,32%{opacity:1}35%,80%{opacity:0}83%,93%{opacity:1}95%,100%{opacity:0}}
+.fbgy-score{animation:fbgy-score 7.2s infinite;opacity:0}
+@keyframes fbgy-score{0%,76%,90%,100%{opacity:0}80%,86%{opacity:1}}`}
+    >
+      <Ground />
+      {/* vaulting table */}
+      <T x={62} y={58} s="┌────┐" />
+      <T x={62} y={68} s="│    │" />
+      <T x={62} y={78} s="└────┘" />
+      <T x={68} y={88} s="│  │" className="opacity-70" />
+      <T x={4} y={18} s="9.7" className="fbgy-score" fill="var(--primary)" />
+      <g className="fbgy-bot">
+        <GlyphBot
+          x={32}
+          legs={
+            <>
+              <g className="fbgy-run">
+                <T x={23} y={88} s="╱ ╲" className="fbgy-legA" />
+                <T x={23} y={88} s="│ ╱" className="fbgy-legB" />
+              </g>
+              <T x={23} y={88} s="│ │" className="fbgy-arms" />
+            </>
+          }
+        />
+        <T x={17} y={38} s="\\" className="fbgy-arms" />
+        <T x={47} y={38} s="/" className="fbgy-arms" />
+      </g>
+    </SceneShell>
+  );
+}
+
+/** Clean & jerk — bar goes up; the lockout is a negotiation. */
+function WeightliftingScene() {
+  return (
+    <SceneShell
+      css={`
+.fbwl-bot{animation:fbwl-bot 7.2s ease-in-out infinite}
+@keyframes fbwl-bot{
+  0%,10%{transform:translateY(0)}
+  18%{transform:translateY(6px)}
+  32%{transform:translateY(0)}
+  44%{transform:translateY(5px)}
+  56%,78%{transform:translateY(0)}
+  100%{transform:translateY(0)}}
+.fbwl-bar{animation:fbwl-bar 7.2s ease-in-out infinite}
+@keyframes fbwl-bar{
+  0%,10%{transform:translateY(0)}
+  18%{transform:translateY(4px)}
+  32%{transform:translateY(-28px)}
+  44%{transform:translateY(-22px)}
+  58%{transform:translateY(-52px)}
+  64%{transform:translateY(-50px) rotate(-3deg)}
+  70%{transform:translateY(-52px) rotate(3deg)}
+  76%,86%{transform:translateY(-52px) rotate(0)}
+  94%,100%{transform:translateY(0) rotate(0)}}
+.fbwl-down{animation:fbwl-down 7.2s infinite}
+@keyframes fbwl-down{0%,28%,92%,100%{opacity:1}32%,88%{opacity:0}}
+.fbwl-chest{animation:fbwl-chest 7.2s infinite;opacity:0}
+@keyframes fbwl-chest{0%,30%,56%,100%{opacity:0}34%,52%{opacity:1}}
+.fbwl-up{animation:fbwl-up 7.2s infinite;opacity:0}
+@keyframes fbwl-up{0%,54%,90%,100%{opacity:0}58%,86%{opacity:1}}
+.fbwl-strain{animation:fbwl-strain 7.2s infinite}
+@keyframes fbwl-strain{0%,54%,88%,100%{opacity:1}58%,84%{opacity:0}}
+.fbwl-lock{animation:fbwl-lock 7.2s infinite;opacity:0}
+@keyframes fbwl-lock{0%,54%,88%,100%{opacity:0}58%,84%{opacity:1}}`}
+    >
+      <Ground />
+      <g className="fbwl-bot">
+        <GlyphBot
+          x={80}
+          eyes={
+            <>
+              <T x={71} y={50} s="o o" className="fbwl-strain" />
+              <T x={71} y={50} s="^ ^" className="fbwl-lock" />
+            </>
+          }
+        />
+        {/* arms reach to the bar at each height */}
+        <T x={62} y={70} s="│" className="fbwl-down" />
+        <T x={62} y={80} s="│" className="fbwl-down" />
+        <T x={92} y={70} s="│" className="fbwl-down" />
+        <T x={92} y={80} s="│" className="fbwl-down" />
+        <T x={62} y={62} s="─" className="fbwl-chest" />
+        <T x={92} y={62} s="─" className="fbwl-chest" />
+        <T x={62} y={50} s="│" className="fbwl-up" />
+        <T x={62} y={40} s="│" className="fbwl-up" />
+        <T x={92} y={50} s="│" className="fbwl-up" />
+        <T x={92} y={40} s="│" className="fbwl-up" />
+      </g>
+      <g className="fbwl-bar" style={{ transformOrigin: "80px 88px" }}>
+        {/* left bumper */}
+        <T x={18} y={78} s="╭───╮" fill="var(--primary)" />
+        <T x={16} y={88} s="( ● )" fill="var(--primary)" />
+        <T x={18} y={96} s="╰───╯" fill="var(--primary)" />
+        <T x={48} y={88} s="══" />
+        <T x={62} y={88} s="o" />
+        <T x={92} y={88} s="o" />
+        <T x={98} y={88} s="══" />
+        {/* right bumper */}
+        <T x={110} y={78} s="╭───╮" fill="var(--primary)" />
+        <T x={108} y={88} s="( ● )" fill="var(--primary)" />
+        <T x={110} y={96} s="╰───╯" fill="var(--primary)" />
+      </g>
+    </SceneShell>
+  );
+}
+
+/** Archery — draw, hold, release; the target flinches either way. */
+function ArcheryScene() {
+  return (
+    <SceneShell
+      css={`
+.fbar-draw{animation:fbar-draw 6.4s ease-in-out infinite;transform-origin:63px 58px}
+@keyframes fbar-draw{0%,8%,38%,100%{transform:rotate(0)}18%,32%{transform:rotate(-22deg)}}
+.fbar-arrow{animation:fbar-arrow 6.4s linear infinite}
+@keyframes fbar-arrow{
+  0%,32%{transform:translate(0,0);opacity:1}
+  48%{transform:translate(62px,2px);opacity:1}
+  52%,100%{transform:translate(62px,2px);opacity:0}}
+.fbar-hit{animation:fbar-hit 6.4s infinite}
+@keyframes fbar-hit{0%,48%,58%,100%{transform:translateX(0)}50%,54%{transform:translateX(3px)}}
+.fbar-bull{animation:fbar-bull 6.4s infinite;opacity:0}
+@keyframes fbar-bull{0%,50%,70%,100%{opacity:0}54%,66%{opacity:1}}
+.fbar-hold{animation:fbar-hold 6.4s infinite;opacity:0}
+@keyframes fbar-hold{0%,16%,34%,100%{opacity:0}20%,30%{opacity:1}}`}
+    >
+      <Ground />
+      <T x={66} y={36} s="…" className="fbar-hold" fill="var(--primary)" />
+      <g className="fbar-hit">
+        <T x={118} y={34} s="╭───╮" />
+        <T x={118} y={44} s="│" />
+        <T x={142} y={44} s="│" />
+        <T x={124} y={44} s="╭─╮" className="opacity-70" />
+        <T x={118} y={54} s="│" />
+        <T x={142} y={54} s="│" />
+        <T x={130} y={54} s="●" fill="var(--primary)" />
+        <T x={118} y={64} s="│" />
+        <T x={142} y={64} s="│" />
+        <T x={124} y={64} s="╰─╯" className="opacity-70" />
+        <T x={118} y={74} s="╰───╯" />
+        <T x={130} y={84} s="│" className="opacity-50" />
+        <T x={130} y={34} s="+" className="fbar-bull" fill="var(--primary)" />
+      </g>
+      <GlyphBot x={48} />
+      <g className="fbar-draw">
+        <T x={63} y={60} s="─)" />
+        <T x={58} y={52} s="╮" className="opacity-70" />
+        <T x={58} y={68} s="╯" className="opacity-70" />
+      </g>
+      <g className="fbar-arrow">
+        <T x={72} y={60} s="─▶" fill="var(--primary)" />
+      </g>
+    </SceneShell>
+  );
+}
+
+/** Fencing — en garde, lunge, a very polite touché. */
+function FencingScene() {
+  return (
+    <SceneShell
+      css={`
+.fbfe-lunge{animation:fbfe-lunge 5.4s ease-in-out infinite}
+@keyframes fbfe-lunge{0%,12%,28%,100%{transform:translateX(0)}16%,22%{transform:translateX(16px)}}
+.fbfe-foil{animation:fbfe-foil 5.4s ease-in-out infinite;transform-origin:63px 60px}
+@keyframes fbfe-foil{0%,12%,28%,100%{transform:rotate(0)}16%,22%{transform:rotate(-8deg)}}
+.fbfe-foe{animation:fbfe-foe 5.4s ease-in-out infinite;transform-origin:124px 88px}
+@keyframes fbfe-foe{0%,18%,36%,100%{transform:rotate(0)}22%,30%{transform:rotate(12deg) translateX(6px)}}
+.fbfe-clash{animation:fbfe-clash 5.4s infinite;opacity:0}
+@keyframes fbfe-clash{0%,16%,26%,100%{opacity:0}18%,24%{opacity:1}}
+.fbfe-point{animation:fbfe-point 5.4s infinite;opacity:0}
+@keyframes fbfe-point{0%,24%,48%,100%{opacity:0}28%,42%{opacity:1}}
+.fbfe-ok{animation:fbfe-ok 5.4s infinite}
+@keyframes fbfe-ok{0%,18%,40%,100%{opacity:1}22%,36%{opacity:0}}
+.fbfe-win{animation:fbfe-win 5.4s infinite;opacity:0}
+@keyframes fbfe-win{0%,18%,40%,100%{opacity:0}22%,36%{opacity:1}}`}
+    >
+      <Ground />
+      <T x={4} y={18} s="TOUCHÉ" className="fbfe-point" fill="var(--primary)" />
+      <g className="fbfe-lunge">
         <GlyphBot
           x={44}
           eyes={
             <>
-              <T x={35} y={50} s="o o" className="fbb-ok" />
-              <T x={35} y={50} s="x x" className="fbb-ko" />
+              <T x={35} y={50} s="o o" className="fbfe-ok" />
+              <T x={35} y={50} s="^ ^" className="fbfe-win" />
             </>
           }
         />
-        {/* rear guard glove */}
-        <T x={23} y={56} s="O" fill="var(--primary)" />
-        {/* jab glove */}
-        <g className="fbb-jab">
-          <T x={59} y={60} s="──" />
-          <T x={71} y={60} s="O" fill="var(--primary)" />
+        <g className="fbfe-foil">
+          <T x={59} y={60} s="─────" fill="var(--primary)" />
         </g>
-        <T x={38} y={26} s="✶ ✶" className="fbb-stars" fill="var(--primary)" />
       </g>
-    </svg>
+      <g className="fbfe-foe">
+        <T x={112} y={40} s="╭─┴─╮" className="opacity-55" />
+        <T x={112} y={50} s="│ x │" className="opacity-55" />
+        <T x={112} y={60} s="├───┤" className="opacity-55" />
+        <T x={112} y={70} s="│   │" className="opacity-55" />
+        <T x={112} y={80} s="╰┬─┬╯" className="opacity-55" />
+        <T x={118} y={88} s="╱ ╲" className="opacity-55" />
+        <T x={94} y={58} s="────" className="opacity-40" />
+      </g>
+      <T x={88} y={52} s="✶" className="fbfe-clash" fill="var(--primary)" />
+    </SceneShell>
   );
 }
 
-/** A tidy two-ball cascade… because the third one got away. */
-function JugglingScene() {
+/** Street skate — roll, ollie, try to look composed. */
+function SkateboardingScene() {
   return (
-    <svg viewBox="0 0 160 100" width="190" className="fb-scene" aria-hidden>
-      <style>{`${SHARED_CSS}
-.fbj-a{animation:fbj-path 2.4s linear infinite}
-.fbj-b{animation:fbj-path 2.4s linear infinite;animation-delay:-1.2s}
-@keyframes fbj-path{
-  0%{transform:translate(37px,52px)}
-  15%{transform:translate(46px,26px)}
-  30%{transform:translate(60px,18px)}
-  45%{transform:translate(74px,26px)}
-  60%{transform:translate(83px,52px)}
-  80%{transform:translate(60px,62px)}
-  100%{transform:translate(37px,52px)}}
-.fbj-armL{animation:fbj-armL 1.2s ease-in-out infinite;transform-origin:45px 58px}
-@keyframes fbj-armL{0%,100%{transform:rotate(0)}50%{transform:rotate(-14deg)}}
-.fbj-armR{animation:fbj-armR 1.2s ease-in-out infinite;transform-origin:75px 58px}
-@keyframes fbj-armR{0%,100%{transform:rotate(14deg)}50%{transform:rotate(0)}}
-.fbj-shame{animation:fbj-shame 4.8s infinite;opacity:0}
-@keyframes fbj-shame{0%,45%,70%,100%{opacity:0}50%,65%{opacity:1}}`}</style>
-      <Ground />
-      <GlyphBot x={60} />
-      {/* raised forearms */}
-      <g className="fbj-armL">
-        <T x={39} y={58} s="╲" />
+    <SceneShell
+      css={`
+.fbsk-road{animation:fbsk-road .4s linear infinite}
+@keyframes fbsk-road{0%{transform:translateX(0)}100%{transform:translateX(-18px)}}
+.fbsk-ollie{animation:fbsk-ollie 5.8s ease-in-out infinite;transform-origin:70px 92px}
+@keyframes fbsk-ollie{
+  0%,38%{transform:translate(0,0) rotate(0)}
+  44%{transform:translate(0,3px) rotate(0)}
+  50%{transform:translate(0,-18px) rotate(-12deg)}
+  56%{transform:translate(0,-16px) rotate(8deg)}
+  62%{transform:translate(0,0) rotate(0)}
+  100%{transform:translate(0,0) rotate(0)}}
+.fbsk-bob{animation:fbsk-bob .5s ease-in-out infinite}
+@keyframes fbsk-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-1px)}}
+.fbsk-legA{animation:fbsk-legA .7s steps(1) infinite}
+@keyframes fbsk-legA{0%,100%{opacity:1}50%{opacity:0}}
+.fbsk-legB{animation:fbsk-legB .7s steps(1) infinite;opacity:0}
+@keyframes fbsk-legB{0%,100%{opacity:0}50%{opacity:1}}
+.fbsk-dust{animation:fbsk-dust 5.8s infinite;opacity:0}
+@keyframes fbsk-dust{0%,60%,72%,100%{opacity:0}63%,68%{opacity:1}}`}
+    >
+      <g className="fbsk-road">
+        <T x={-16} y={96} s={"┄ ".repeat(18)} className="opacity-35" />
       </g>
-      <g className="fbj-armR">
-        <T x={75} y={58} s="╱" />
-      </g>
-      {/* two loyal balls (drawn at origin, flown by keyframes) */}
-      <T x={0} y={0} s="o" className="fbj-a" />
-      <T x={0} y={0} s="o" className="fbj-b" />
-      {/* the deserter */}
-      <T x={104} y={88} s="●" fill="var(--primary)" />
-      <T x={98} y={78} s="!" className="fbj-shame" fill="var(--primary)" />
-    </svg>
-  );
-}
-
-/** Hiking at a steady clip — until a rock wanders under his foot. */
-function HikingScene() {
-  return (
-    <svg viewBox="0 0 160 100" width="190" className="fb-scene" aria-hidden>
-      <style>{`${SHARED_CSS}
-.fbh-bob{animation:fbh-bob 0.9s ease-in-out infinite}
-@keyframes fbh-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}
-.fbh-trip{animation:fbh-trip 6s ease-in-out infinite;transform-origin:46px 88px}
-@keyframes fbh-trip{0%,80%,94%,100%{transform:rotate(0)}84%,88%{transform:rotate(16deg)}}
-.fbh-legA{animation:fbh-legA 0.9s steps(1) infinite}
-@keyframes fbh-legA{0%,100%{opacity:1}50%{opacity:0}}
-.fbh-legB{animation:fbh-legB 0.9s steps(1) infinite;opacity:0}
-@keyframes fbh-legB{0%,100%{opacity:0}50%{opacity:1}}
-.fbh-stick{animation:fbh-stick 0.9s ease-in-out infinite;transform-origin:61px 58px}
-@keyframes fbh-stick{0%,100%{transform:rotate(0)}50%{transform:rotate(7deg)}}
-.fbh-trail{animation:fbh-trail 0.9s linear infinite}
-@keyframes fbh-trail{0%{transform:translateX(0)}100%{transform:translateX(-18px)}}
-.fbh-rock{animation:fbh-rock 6s linear infinite}
-@keyframes fbh-rock{0%{transform:translateX(0);opacity:0}6%{opacity:1}76%{opacity:1}82%,100%{transform:translateX(-120px);opacity:0}}
-.fbh-oops{animation:fbh-oops 6s infinite;opacity:0}
-@keyframes fbh-oops{0%,82%,96%,100%{opacity:0}86%,93%{opacity:1}}`}</style>
-      {/* sun + a modest summit */}
-      <T x={136} y={18} s="☼" fill="var(--primary)" />
-      <T x={117} y={46} s="⌐" fill="var(--primary)" />
-      <T x={114} y={54} s="╱╲" className="opacity-60" />
-      <T x={108} y={64} s="╱  ╲" className="opacity-60" />
-      <T x={102} y={74} s="╱    ╲" className="opacity-60" />
-      <T x={96} y={84} s="╱      ╲" className="opacity-60" />
-      {/* scrolling trail */}
-      <g className="fbh-trail">
-        <T x={-14} y={92} s={"┄  ".repeat(12)} className="opacity-40" />
-      </g>
-      <g className="fbh-rock">
-        <T x={150} y={90} s="▴" fill="var(--primary)" />
-      </g>
-      <T x={64} y={34} s="!" className="fbh-oops" fill="var(--primary)" />
-      <g className="fbh-trip">
-        <g className="fbh-bob">
+      <T x={88} y={88} s="˚ ˚" className="fbsk-dust" />
+      <g className="fbsk-ollie">
+        <g className="fbsk-bob">
           <GlyphBot
-            x={46}
+            x={70}
             legs={
               <>
-                <T x={37} y={88} s="╱ ╲" className="fbh-legA" />
-                <T x={37} y={88} s="│ │" className="fbh-legB" />
+                <T x={61} y={88} s="╱ ╲" className="fbsk-legA" />
+                <T x={61} y={88} s="│ ╲" className="fbsk-legB" />
               </>
             }
           />
-          {/* trekking pole */}
-          <g className="fbh-stick">
-            <T x={61} y={62} s="─╲" />
-            <T x={70} y={74} s="│" />
-            <T x={70} y={86} s="│" />
-          </g>
+          <T x={49} y={58} s="╲" />
+          <T x={91} y={58} s="╱" />
         </g>
+        <T x={40} y={92} s="╰──────────╯" />
+        <T x={46} y={96} s="o" fill="var(--primary)" />
+        <T x={100} y={96} s="o" fill="var(--primary)" />
       </g>
-    </svg>
+    </SceneShell>
   );
 }
 
-/** Patient fishing — the fish are jumping everywhere except his line. */
-function FishingScene() {
+/** Platform dive — bounce, pencil in, splash, gone. */
+function DivingScene() {
   return (
-    <svg viewBox="0 0 160 100" width="190" className="fb-scene" aria-hidden>
-      <style>{`${SHARED_CSS}
-.fbf-bobber{animation:fbf-bobber 2.6s ease-in-out infinite}
-@keyframes fbf-bobber{0%,100%{transform:translateY(0)}50%{transform:translateY(2px)}}
-.fbf-waterA{animation:fbf-waterA 2.6s steps(1) infinite}
-@keyframes fbf-waterA{0%,100%{opacity:.7}50%{opacity:0}}
-.fbf-waterB{animation:fbf-waterB 2.6s steps(1) infinite;opacity:0}
-@keyframes fbf-waterB{0%,100%{opacity:0}50%{opacity:.7}}
-.fbf-fish{animation:fbf-fish 7s ease-in-out infinite;opacity:0;transform-origin:137px 83px}
-@keyframes fbf-fish{
-  0%,50%{opacity:0;transform:translate(0,0) rotate(0)}
-  53%{opacity:1;transform:translate(-8px,-14px) rotate(-24deg)}
-  57%{opacity:1;transform:translate(-18px,-22px) rotate(-38deg)}
-  61%{opacity:1;transform:translate(-30px,-10px) rotate(-64deg)}
-  64%,100%{opacity:0;transform:translate(-36px,2px) rotate(-72deg)}}
-.fbf-splash{animation:fbf-splash 7s infinite;opacity:0}
-@keyframes fbf-splash{0%,60%,72%,100%{opacity:0}63%,69%{opacity:1}}
-.fbf-huh{animation:fbf-huh 7s infinite;opacity:0}
-@keyframes fbf-huh{0%,64%,86%,100%{opacity:0}68%,82%{opacity:1}}`}</style>
-      {/* shore under the robot, water to the right */}
-      <T x={4} y={92} s={"─".repeat(11)} className="opacity-40" />
-      <T x={64} y={92} s="≈ ≈ ≈ ≈ ≈ ≈ ≈ ≈" className="fbf-waterA" fill="var(--primary)" />
-      <T x={70} y={92} s="≈ ≈ ≈ ≈ ≈ ≈ ≈" className="fbf-waterB" fill="var(--primary)" />
-      <GlyphBot x={36} />
-      {/* rod + line + bobber */}
-      <T x={51} y={62} s="─" />
-      <T x={57} y={58} s="╱" />
-      <T x={63} y={50} s="╱" />
-      <T x={69} y={60} s="┆" />
-      <T x={69} y={70} s="┆" />
-      <T x={69} y={80} s="┆" />
-      <g className="fbf-bobber">
-        <T x={69} y={90} s="o" fill="var(--primary)" />
+    <SceneShell
+      css={`
+.fbdv-board{animation:fbdv-board 6.8s ease-in-out infinite;transform-origin:10px 62px}
+@keyframes fbdv-board{0%,10%,26%,100%{transform:rotate(0)}16%{transform:rotate(8deg)}22%{transform:rotate(-4deg)}}
+.fbdv-bot{animation:fbdv-bot 6.8s ease-in-out infinite}
+@keyframes fbdv-bot{
+  0%,10%{transform:translate(0,-30px);opacity:1}
+  16%{transform:translate(2px,-42px);opacity:1}
+  22%{transform:translate(0,-26px);opacity:1}
+  28%{transform:translate(8px,-48px);opacity:1}
+  40%{transform:translate(26px,-6px);opacity:1}
+  50%{transform:translate(40px,18px);opacity:1}
+  56%{transform:translate(48px,34px);opacity:1}
+  60%,86%{transform:translate(50px,48px);opacity:0}
+  100%{transform:translate(0,-30px);opacity:1}}
+.fbdv-splash{animation:fbdv-splash 6.8s infinite;opacity:0}
+@keyframes fbdv-splash{0%,54%,72%,100%{opacity:0}57%,66%{opacity:1}}
+.fbdv-waterA{animation:fbdv-waterA 1.8s steps(1) infinite}
+@keyframes fbdv-waterA{0%,100%{opacity:.7}50%{opacity:0}}
+.fbdv-waterB{animation:fbdv-waterB 1.8s steps(1) infinite;opacity:0}
+@keyframes fbdv-waterB{0%,100%{opacity:0}50%{opacity:.7}}`}
+    >
+      <T x={4} y={20} s="││" className="opacity-50" />
+      <T x={4} y={30} s="││" className="opacity-50" />
+      <T x={4} y={40} s="││" className="opacity-50" />
+      <T x={4} y={50} s="││" className="opacity-50" />
+      <T x={4} y={60} s="││" className="opacity-50" />
+      <T x={4} y={70} s="││" className="opacity-50" />
+      <T x={4} y={80} s="││" className="opacity-50" />
+      <T x={4} y={88} s="└┘" className="opacity-50" />
+      <g className="fbdv-board">
+        <T x={10} y={62} s="────────" />
       </g>
-      {/* the show-off fish */}
-      <g className="fbf-fish">
-        <T x={128} y={86} s="<><" />
+      <T x={58} y={92} s="≈ ≈ ≈ ≈ ≈ ≈ ≈ ≈ ≈" className="fbdv-waterA" fill="var(--primary)" />
+      <T x={64} y={92} s="≈ ≈ ≈ ≈ ≈ ≈ ≈ ≈" className="fbdv-waterB" fill="var(--primary)" />
+      <T x={70} y={78} s="◜     ◝" className="fbdv-splash" fill="var(--primary)" />
+      <T x={76} y={84} s="˚ ˚ ˚" className="fbdv-splash" />
+      <T x={70} y={90} s="≈≈≈≈≈" className="fbdv-splash" fill="var(--primary)" />
+      <g className="fbdv-bot">
+        <GlyphBot x={36} />
       </g>
-      <T x={92} y={88} s="∙ ∙" className="fbf-splash" />
-      <T x={54} y={38} s="?" className="fbf-huh" fill="var(--primary)" />
-    </svg>
+    </SceneShell>
+  );
+}
+
+/** Table tennis — a tidy rally until the third ball finds the floor. */
+function TableTennisScene() {
+  return (
+    <SceneShell
+      css={`
+.fbtt-arm{animation:fbtt-arm 1.6s ease-in-out infinite;transform-origin:55px 58px}
+@keyframes fbtt-arm{0%,100%{transform:rotate(8deg)}50%{transform:rotate(-18deg)}}
+.fbtt-ball{animation:fbtt-ball 1.6s linear infinite}
+@keyframes fbtt-ball{
+  0%{transform:translate(64px,54px)}
+  25%{transform:translate(90px,38px)}
+  50%{transform:translate(118px,54px)}
+  75%{transform:translate(90px,38px)}
+  100%{transform:translate(64px,54px)}}
+.fbtt-foe{animation:fbtt-foe 1.6s ease-in-out infinite;transform-origin:136px 56px}
+@keyframes fbtt-foe{0%,100%{transform:rotate(-10deg)}50%{transform:rotate(16deg)}}
+.fbtt-drop{animation:fbtt-drop 6.4s ease-in infinite;opacity:0}
+@keyframes fbtt-drop{
+  0%,55%{opacity:0;transform:translateY(0)}
+  62%{opacity:1;transform:translateY(0)}
+  78%{opacity:1;transform:translateY(28px)}
+  82%,100%{opacity:0;transform:translateY(28px)}}
+.fbtt-rally{animation:fbtt-rally 6.4s infinite}
+@keyframes fbtt-rally{0%,60%,100%{opacity:1}64%,96%{opacity:0}}
+.fbtt-oops{animation:fbtt-oops 6.4s infinite;opacity:0}
+@keyframes fbtt-oops{0%,70%,90%,100%{opacity:0}74%,86%{opacity:1}}`}
+    >
+      <Ground />
+      {/* table + net */}
+      <T x={58} y={66} s="┌───────────┐" />
+      <T x={94} y={58} s="┼" fill="var(--primary)" />
+      <T x={64} y={76} s="│" className="opacity-40" />
+      <T x={124} y={76} s="│" className="opacity-40" />
+      <T x={64} y={86} s="│" className="opacity-40" />
+      <T x={124} y={86} s="│" className="opacity-40" />
+      <GlyphBot x={40} />
+      <g className="fbtt-arm">
+        <T x={55} y={60} s="─" />
+        <T x={61} y={58} s="D" fill="var(--primary)" />
+      </g>
+      <g className="fbtt-foe">
+        <T x={130} y={40} s="╭┴╮" className="opacity-50" />
+        <T x={130} y={50} s="│x│" className="opacity-50" />
+        <T x={130} y={60} s="╰─╯" className="opacity-50" />
+        <T x={124} y={56} s="C" fill="var(--primary)" />
+      </g>
+      <g className="fbtt-rally">
+        <T x={0} y={0} s="o" className="fbtt-ball" />
+      </g>
+      <T x={96} y={60} s="o" className="fbtt-drop" fill="var(--primary)" />
+      <T x={66} y={38} s="!" className="fbtt-oops" fill="var(--primary)" />
+    </SceneShell>
   );
 }
 
 const SCENES: Record<RobotSceneVariant, () => React.JSX.Element> = {
-  painting: PaintingScene,
-  boxing: BoxingScene,
-  juggling: JugglingScene,
-  hiking: HikingScene,
-  fishing: FishingScene,
+  sprint: SprintScene,
+  swimming: SwimmingScene,
+  gymnastics: GymnasticsScene,
+  weightlifting: WeightliftingScene,
+  archery: ArcheryScene,
+  fencing: FencingScene,
+  skateboarding: SkateboardingScene,
+  diving: DivingScene,
+  tabletennis: TableTennisScene,
+};
+
+const SCENE_LABELS: Record<RobotSceneVariant, string> = {
+  sprint: "100m sprint",
+  swimming: "Freestyle",
+  gymnastics: "Vault",
+  weightlifting: "Clean & jerk",
+  archery: "Archery",
+  fencing: "Fencing",
+  skateboarding: "Skateboarding",
+  diving: "10m platform",
+  tabletennis: "Table tennis",
 };
 
 type RobotEmptyStateProps = {
-  variant: RobotSceneVariant;
+  /** Pin a sport. Omit to pick one at random and rotate through the rest. */
+  variant?: RobotSceneVariant;
   caption: string;
   className?: string;
 };
 
+/** Dev/preview grid of every Olympic scene playing at once. */
+export function RobotSceneGallery({ className }: { className?: string }) {
+  return (
+    <div className={cn("grid gap-8 sm:grid-cols-2", className)}>
+      {ROBOT_SCENE_VARIANTS.map((variant) => {
+        const Scene = SCENES[variant];
+        return (
+          <div key={variant} className="text-muted-foreground flex flex-col items-center gap-1 select-none">
+            <Scene />
+            <p className="text-xs tracking-wide uppercase">{SCENE_LABELS[variant]}</p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Animated glyph-robot scene shown when a list has nothing in it. */
 export function RobotEmptyState({ variant, caption, className }: RobotEmptyStateProps) {
-  const Scene = SCENES[variant];
+  const [picked, setPicked] = useState<RobotSceneVariant>(() => variant ?? pickRandomScene());
+
+  useEffect(() => {
+    if (variant) {
+      setPicked(variant);
+      return;
+    }
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (mq.matches) return;
+    const id = window.setInterval(() => {
+      setPicked((current) => pickRandomScene(current));
+    }, SCENE_MS);
+    return () => window.clearInterval(id);
+  }, [variant]);
+
+  const Scene = SCENES[picked];
   return (
     <div className={cn("text-muted-foreground flex flex-col items-center gap-2 py-6 select-none", className)}>
-      <Scene />
+      <div key={picked} className="animate-fade-up">
+        <Scene />
+      </div>
       <p className="text-sm">{caption}</p>
     </div>
   );

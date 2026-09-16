@@ -82,6 +82,7 @@ export type CreateGoogleEventInput = {
   startsAt: Date;
   endsAt: Date | null;
   location: string | null;
+  notes: string | null;
   timezone: string;
   /** RFC-5545 rule; the whole series is created on Google, not occurrences. */
   rrule: string | null;
@@ -90,15 +91,15 @@ export type CreateGoogleEventInput = {
 /** Pure payload builder (exported for tests). */
 export function buildGoogleEventPayload(input: CreateGoogleEventInput): Record<string, unknown> {
   const end = input.endsAt ?? new Date(input.startsAt.getTime() + 3_600_000);
-  return {
+  const payload: Record<string, unknown> = {
     summary: input.title,
-    location: input.location ?? undefined,
     start: { dateTime: input.startsAt.toISOString(), timeZone: input.timezone },
     end: { dateTime: end.toISOString(), timeZone: input.timezone },
-    ...(input.rrule
-      ? { recurrence: [`RRULE:${input.rrule.replace(/^RRULE:/i, "")}`] }
-      : {}),
   };
+  if (input.location) payload.location = input.location;
+  if (input.notes) payload.description = input.notes;
+  if (input.rrule) payload.recurrence = [`RRULE:${input.rrule.replace(/^RRULE:/i, "")}`];
+  return payload;
 }
 
 export class GoogleCalendarProvider {

@@ -10,9 +10,10 @@ import {
   messages,
 } from "@fambot/database";
 import type { InboundMessage, ConversationTurn } from "@fambot/shared";
-import { InvocationMatcher, shouldInvokeAssistant } from "@fambot/shared";
+import { InvocationMatcher, parseConversationFocus, shouldInvokeAssistant, withArtifactLinks } from "@fambot/shared";
 import { toLocalIso } from "@fambot/domain";
-import { ProgressReporter } from "@fambot/ai";
+import { AGENT_ERROR_REPLY, ProgressReporter } from "@fambot/ai";
+import { loadFocusedArtifact } from "./artifact-preview";
 import {
   getOrCreateSmsConversation,
   getOrCreateSmsGroupConversation,
@@ -99,6 +100,9 @@ export async function processInbound(inbound: InboundMessage): Promise<PipelineR
     send: (text) =>
       channelRouter.sendMessage({ conversationId: conversation.id, text, kind: "progress" }),
   });
+  const focusRef = parseConversationFocus(conversation.externalId);
+  const focusedArtifact = focusRef ? await loadFocusedArtifact(db, focusRef.type, focusRef.id) : null;
+
   const result = await ai.runAgent({
     mcp: {
       url: `${env.API_BASE_URL.replace(/\/$/, "")}/mcp`,
@@ -112,6 +116,7 @@ export async function processInbound(inbound: InboundMessage): Promise<PipelineR
       isGroup: inbound.context.isGroup,
       recentTurns,
       text: matcher.strip(inbound.text),
+      focusedArtifact,
     },
     onToolStep: (step) => progress.onToolStep(step),
   });
@@ -142,15 +147,21 @@ export async function processInbound(inbound: InboundMessage): Promise<PipelineR
     );
   }
 
-  if (result.reply) {
-    await channelRouter.sendMessage({ conversationId: conversation.id, text: result.reply });
+  const reply = withArtifactLinks({
+    reply: result.reply || null,
+    steps: result.steps,
+    appUrl: env.APP_URL,
+    skipReply: AGENT_ERROR_REPLY,
+  });
+  if (reply) {
+    await channelRouter.sendMessage({ conversationId: conversation.id, text: reply });
   }
 
   return {
     conversationId: conversation.id,
     persistedMessageId: messageId,
     invoked: true,
-    reply: result.reply || null,
+    reply,
   };
 }
 
@@ -207,11 +218,8 @@ async function resolveConversation(inbound: InboundMessage) {
           and(eq(identities.type, "phone"), eq(members.householdId, household.id))
         );
       const expected = new Set(householdPhones.map(({ phone }) => phone));
-      if (
-        participantPhones.size !== expected.size ||
-        [...participantPhones].some((phone) => !expected.has(phone))
-      ) {
-        console.warn("[pipeline] ignoring SMS group with unknown or missing household participants");
+      if ([...participantPhones].some((phone) => !expected.has(phone))) {
+        console.warn("[pipeline] ignoring SMS group with unknown participants");
         return null;
       }
       const conversationId = await getOrCreateSmsGroupConversation(db, household.id);

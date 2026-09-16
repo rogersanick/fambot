@@ -11,6 +11,8 @@ export type AgentInput = {
   recentTurns: ConversationTurn[];
   /** The user's request with any @fambot tag stripped. */
   text: string;
+  /** Set when the user is prompt-editing a specific portal item. */
+  focusedArtifact?: { type: string; id: string; title: string; details: string } | null;
 };
 
 /** One completed MCP tool call inside an agent run (for audit + progress). */

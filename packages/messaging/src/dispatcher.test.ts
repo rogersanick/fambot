@@ -12,6 +12,7 @@ import {
   messages,
   outboxMessages,
   reminders,
+  tasks,
   type Db,
 } from "@fambot/database";
 import { NotificationDispatcher } from "./dispatcher";
@@ -91,11 +92,20 @@ async function fixture(opts?: { sms?: boolean; imessage?: boolean; memberCount?:
 
 /** deliveries.reminderId is a real FK, so dispatch tests need actual reminder rows. */
 async function makeReminder(householdId: string, memberId: string | null) {
+  const [task] = await db
+    .insert(tasks)
+    .values({
+      householdId,
+      title: "parent task",
+      status: "open",
+    })
+    .returning();
   const [row] = await db
     .insert(reminders)
     .values({
       householdId,
       title: "test reminder",
+      taskId: task!.id,
       targetType: memberId ? "member" : "conversation",
       targetMemberId: memberId,
       timezone: "America/New_York",

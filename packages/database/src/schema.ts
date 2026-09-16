@@ -220,12 +220,36 @@ export const lists = pgTable(
       .notNull()
       .references(() => households.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    /** Optional task this checklist is used with. Standing lists stay null. */
+    taskId: uuid("task_id").references(() => tasks.id, { onDelete: "set null" }),
+    /** Optional event this checklist is used with (packing for a trip, etc.). */
+    eventId: uuid("event_id").references(() => events.id, { onDelete: "set null" }),
     createdByMemberId: uuid("created_by_member_id").references(() => members.id, {
       onDelete: "set null",
     }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("lists_household_name_uq").on(t.householdId, t.name)]
+  (t) => [
+    uniqueIndex("lists_household_name_uq").on(t.householdId, t.name),
+    index("lists_task_idx").on(t.taskId),
+    index("lists_event_idx").on(t.eventId),
+  ]
+);
+
+/** Checklist rows — never tasks. Checked/unchecked only. */
+export const checklistItems = pgTable(
+  "checklist_items",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    listId: uuid("list_id")
+      .notNull()
+      .references(() => lists.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("checklist_items_list_idx").on(t.listId, t.sortOrder, t.createdAt)]
 );
 
 /**
@@ -242,7 +266,6 @@ export const taskSeries = pgTable(
     householdId: uuid("household_id")
       .notNull()
       .references(() => households.id, { onDelete: "cascade" }),
-    listId: uuid("list_id").references(() => lists.id, { onDelete: "set null" }),
     title: text("title").notNull(),
     notes: text("notes"),
     assigneeMemberId: uuid("assignee_member_id").references(() => members.id, {
@@ -251,7 +274,7 @@ export const taskSeries = pgTable(
     creatorMemberId: uuid("creator_member_id").references(() => members.id, {
       onDelete: "set null",
     }),
-    /** Where nudges for spawned occurrences are delivered. */
+    /** Where notifications for spawned occurrences are delivered. */
     conversationId: uuid("conversation_id").references(() => conversations.id, {
       onDelete: "set null",
     }),
@@ -259,7 +282,6 @@ export const taskSeries = pgTable(
     timezone: text("timezone").notNull(),
     /** First occurrence; anchors the recurrence in local wall-clock space. */
     anchorAt: timestamp("anchor_at", { withTimezone: true }).notNull(),
-    nagIntervalMin: integer("nag_interval_min").notNull().default(30),
     /** Next occurrence to materialize; null once exhausted/cancelled. */
     nextOccurrenceAt: timestamp("next_occurrence_at", { withTimezone: true }),
     status: text("status", { enum: ["active", "exhausted", "cancelled"] })
@@ -272,8 +294,8 @@ export const taskSeries = pgTable(
 );
 
 /**
- * Tasks MUST be completed. From due_at the worker nudges every
- * nagIntervalMin minutes until status leaves "open".
+ * Tasks MUST be completed. A due date is optional. Notifications are
+ * Reminders attached to the task — tasks do not nag themselves.
  */
 export const tasks = pgTable(
   "tasks",
@@ -282,7 +304,8 @@ export const tasks = pgTable(
     householdId: uuid("household_id")
       .notNull()
       .references(() => households.id, { onDelete: "cascade" }),
-    listId: uuid("list_id").references(() => lists.id, { onDelete: "set null" }),
+    /** Optional calendar event this obligation is attached to. */
+    eventId: uuid("event_id").references(() => events.id, { onDelete: "set null" }),
     title: text("title").notNull(),
     notes: text("notes"),
     status: text("status", { enum: ["open", "done", "cancelled"] }).notNull().default("open"),
@@ -292,15 +315,13 @@ export const tasks = pgTable(
     creatorMemberId: uuid("creator_member_id").references(() => members.id, {
       onDelete: "set null",
     }),
-    /** Where nudges are delivered (originating conversation). */
+    /** Originating conversation (used when a reminder fires for this task). */
     conversationId: uuid("conversation_id").references(() => conversations.id, {
       onDelete: "set null",
     }),
     dueAt: timestamp("due_at", { withTimezone: true }),
     rrule: text("rrule"),
     timezone: text("timezone"),
-    nagIntervalMin: integer("nag_interval_min").notNull().default(30),
-    nextNudgeAt: timestamp("next_nudge_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     /** Series this occurrence was spawned from (null for one-off tasks). */
     seriesId: uuid("series_id").references(() => taskSeries.id, { onDelete: "set null" }),
@@ -313,13 +334,17 @@ export const tasks = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index("tasks_nudge_idx").on(t.status, t.nextNudgeAt),
+    index("tasks_event_idx").on(t.eventId),
     // Idempotent occurrence generation: one row per (series, slot).
     uniqueIndex("tasks_series_slot_uq").on(t.seriesId, t.scheduledFor),
   ]
 );
 
-/** Reminders are fire-and-forget: delivered once per occurrence, no completion. */
+/**
+ * A notification schedule. Usually attached to a Task or Event; a one-off
+ * reminder may have neither. Never both. Task-owned reminders may repeat
+ * until the task is completed.
+ */
 export const reminders = pgTable(
   "reminders",
   {
@@ -330,6 +355,8 @@ export const reminders = pgTable(
     creatorMemberId: uuid("creator_member_id").references(() => members.id, {
       onDelete: "set null",
     }),
+    taskId: uuid("task_id").references(() => tasks.id, { onDelete: "cascade" }),
+    eventId: uuid("event_id").references(() => events.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     targetType: text("target_type", { enum: ["member", "conversation"] }).notNull(),
     targetMemberId: uuid("target_member_id").references(() => members.id, { onDelete: "cascade" }),
@@ -340,13 +367,24 @@ export const reminders = pgTable(
     rrule: text("rrule"),
     timezone: text("timezone").notNull(),
     nextFireAt: timestamp("next_fire_at", { withTimezone: true }),
+    /** When true, the worker stops firing once the parent task leaves "open". */
+    untilCompleted: boolean("until_completed").notNull().default(false),
     status: text("status", { enum: ["scheduled", "done", "cancelled"] })
       .notNull()
       .default("scheduled"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("reminders_fire_idx").on(t.status, t.nextFireAt)]
+  (t) => [
+    index("reminders_fire_idx").on(t.status, t.nextFireAt),
+    index("reminders_task_idx").on(t.taskId),
+    index("reminders_event_idx").on(t.eventId),
+    check("reminders_parent_xor_ck", sql`num_nonnulls(${t.taskId}, ${t.eventId}) <= 1`),
+    check(
+      "reminders_until_completed_ck",
+      sql`${t.untilCompleted} = false OR ${t.taskId} IS NOT NULL`
+    ),
+  ]
 );
 
 /**

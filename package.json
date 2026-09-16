@@ -9,12 +9,21 @@
   ],
   "scripts": {
     "dev": "bun run scripts/dev.ts",
+    "dev:ios": "bun run scripts/dev.ts --no-web",
     "dev:api": "bun --cwd apps/api dev",
     "dev:worker": "bun --cwd apps/worker dev",
     "dev:desktop": "bun --cwd apps/desktop dev",
-    "dev:bridge": "bun --cwd apps/bridge dev",
+    "dev:bridge": "bun --cwd apps/bridge start:local",
+    "bridge": "bun --cwd apps/bridge start:interactive",
+    "bridge:local": "bun --cwd apps/bridge start:local",
+    "bridge:prod": "bun --cwd apps/bridge start:prod",
+    "ios": "bun --cwd apps/desktop ios",
+    "ios:device": "bun --cwd apps/desktop ios:device",
+    "ios:open": "bun --cwd apps/desktop ios:open",
+    "ios:build": "bun --cwd apps/desktop ios:build",
+    "ios:init": "bun --cwd apps/desktop ios:init",
     "db:push": "bun --cwd packages/database push",
-    "test": "bun test packages apps/api apps/worker apps/bridge apps/desktop/src/lib",
+    "test": "bun test packages apps/api apps/worker apps/bridge apps/desktop/src/lib apps/desktop/src/components/household",
     "typecheck": "bun run --filter '*' typecheck"
   }
 }

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { ArtifactRef } from "@fambot/shared";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,14 +8,26 @@ import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/submit-button";
 import { Typewriter } from "@/components/ascii/typewriter";
 import { FambotLogo } from "@/components/robot/logo";
+import { ArtifactPreviewCard } from "@/components/household/artifact-preview-card";
 import { api } from "@/lib/api";
 import { signIn, signUp } from "@/lib/auth";
 
-export function LoginScreen({ inviteMode = false }: { inviteMode?: boolean }) {
+export function LoginScreen({
+  inviteMode = false,
+  artifact = null,
+}: {
+  inviteMode?: boolean;
+  artifact?: ArtifactRef | null;
+}) {
   const [signup, setSignup] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const config = useQuery({ queryKey: ["config"], queryFn: api.config });
+  const preview = useQuery({
+    queryKey: ["artifact-preview", artifact?.type, artifact?.id],
+    queryFn: () => api.artifacts.preview(artifact!.type, artifact!.id).then((row) => row.artifact),
+    enabled: Boolean(artifact),
+  });
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -41,7 +54,7 @@ export function LoginScreen({ inviteMode = false }: { inviteMode?: boolean }) {
   }
 
   return (
-    <main className="flex min-h-svh flex-col items-center justify-center gap-6 p-6">
+    <main className="flex min-h-svh flex-col items-center justify-center gap-6 p-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
       <div className="animate-fade-up flex flex-col items-center gap-2">
         <FambotLogo className="text-primary h-10 sm:h-12" />
         <Typewriter
@@ -50,17 +63,27 @@ export function LoginScreen({ inviteMode = false }: { inviteMode?: boolean }) {
           cursorClassName="text-primary"
         />
       </div>
+      {preview.data && (
+        <div className="animate-fade-up w-full max-w-sm">
+          <ArtifactPreviewCard
+            preview={preview.data}
+            caption="Sign in to edit this with Fambot."
+          />
+        </div>
+      )}
       <Card className="animate-fade-up w-full max-w-sm" style={{ animationDelay: "120ms" }}>
         <CardHeader>
           <CardTitle className="font-serif text-xl">
             {signup ? "Create your FamBot account" : "Sign in to FamBot"}
           </CardTitle>
           <CardDescription>
-            {inviteMode
-              ? "Sign in or create an account to accept your household invitation."
-              : signup
-                ? "One account per family member."
-                : "Your household's shared brain."}
+            {artifact
+              ? "Sign in to open this item and prompt-edit it with Fambot."
+              : inviteMode
+                ? "Sign in or create an account to accept your household invitation."
+                : signup
+                  ? "One account per family member."
+                  : "Your household's shared brain."}
           </CardDescription>
         </CardHeader>
         <CardContent>

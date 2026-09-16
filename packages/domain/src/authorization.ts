@@ -34,6 +34,11 @@ export function authorizeAction(actor: Actor, action: ProposedAction): AuthzResu
     case "update_task":
     case "complete_task":
     case "cancel_task":
+    case "link_task_to_event":
+    case "link_list_to_task":
+    case "link_list_to_event":
+    case "link_reminder_to_task":
+    case "link_reminder_to_event":
     case "create_list":
     case "rename_list":
     case "add_list_items":

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MockLanguageModelV3 } from "ai/test";
+import { MockLanguageModelV3, MockLanguageModelV4 } from "ai/test";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -54,10 +54,17 @@ async function startFakeMcpServer(callLog: unknown[]) {
   return clientTransport;
 }
 
+function v4Usage(inputTokens: number, outputTokens: number) {
+  return {
+    inputTokens: { total: inputTokens, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: outputTokens, text: undefined, reasoning: undefined },
+  };
+}
+
 /** Mock model: first turn calls the tool, second turn answers in text. */
 function toolLoopModel() {
   let call = 0;
-  return new MockLanguageModelV3({
+  return new MockLanguageModelV4({
     doGenerate: async () => {
       call += 1;
       if (call === 1) {
@@ -70,15 +77,15 @@ function toolLoopModel() {
               input: JSON.stringify({ name: "groceries" }),
             },
           ],
-          finishReason: "tool-calls" as const,
-          usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+          finishReason: { unified: "tool-calls" as const, raw: "tool-calls" },
+          usage: v4Usage(100, 20),
           warnings: [],
         };
       }
       return {
         content: [{ type: "text" as const, text: "Your groceries list is ready!" }],
-        finishReason: "stop" as const,
-        usage: { inputTokens: 150, outputTokens: 10, totalTokens: 160 },
+        finishReason: { unified: "stop" as const, raw: "stop" },
+        usage: v4Usage(150, 10),
         warnings: [],
       };
     },

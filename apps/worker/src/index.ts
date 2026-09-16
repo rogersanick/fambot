@@ -34,11 +34,9 @@ console.log(
 
 async function tick() {
   try {
-    const { fired, nudged, spawned } = await runWorkerOnce(db, dispatcher);
-    if (fired || nudged || spawned)
-      console.log(
-        `[worker] fired ${fired} reminder(s), sent ${nudged} nudge(s), spawned ${spawned} occurrence(s)`
-      );
+    const { fired, spawned } = await runWorkerOnce(db, dispatcher);
+    if (fired || spawned)
+      console.log(`[worker] fired ${fired} reminder(s), spawned ${spawned} occurrence(s)`);
   } catch (err) {
     console.error("[worker] tick failed:", err);
   }

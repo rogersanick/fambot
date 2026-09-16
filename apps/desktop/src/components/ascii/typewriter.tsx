@@ -60,7 +60,7 @@ export function Typewriter({
     const visible = line.slice(0, remaining);
     const isActive = remaining <= line.length && !done;
     rendered.push(
-      <div key={i}>
+      <div key={i} className="truncate">
         {visible}
         {isActive && (
           <span className={cn("animate-caret-blink inline-block", cursorClassName)} aria-hidden>

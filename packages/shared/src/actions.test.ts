@@ -8,6 +8,9 @@ describe("ProposedAction schemas", () => {
       title: "check the oven",
       fire_at: "2026-09-09T17:00:00",
       rrule: null,
+      task_ref: null,
+      event_ref: null,
+      until_completed: null,
       target: "sender",
       target_name: null,
     });
@@ -24,10 +27,51 @@ describe("ProposedAction schemas", () => {
       title: "x",
       fire_at: "2026-09-09T17:00:00Z",
       rrule: null,
+      task_ref: null,
+      event_ref: null,
+      until_completed: null,
       target: "sender",
       target_name: null,
     });
     expect(r.success).toBe(false);
+  });
+
+  test("link_task_to_event parses", () => {
+    expect(
+      ProposedActionSchema.safeParse({
+        type: "link_task_to_event",
+        task_ref: "paperwork",
+        event_ref: "dentist",
+      }).success
+    ).toBe(true);
+    expect(
+      ProposedActionSchema.safeParse({
+        type: "link_list_to_task",
+        list_name: "packing",
+        task_ref: "pack the car",
+      }).success
+    ).toBe(true);
+    expect(
+      ProposedActionSchema.safeParse({
+        type: "link_list_to_event",
+        list_name: "packing",
+        event_ref: "beach trip",
+      }).success
+    ).toBe(true);
+    expect(
+      ProposedActionSchema.safeParse({
+        type: "link_reminder_to_task",
+        reminder_ref: "sunscreen",
+        task_ref: "pack the car",
+      }).success
+    ).toBe(true);
+    expect(
+      ProposedActionSchema.safeParse({
+        type: "link_reminder_to_event",
+        reminder_ref: "leave by 8",
+        event_ref: "beach trip",
+      }).success
+    ).toBe(true);
   });
 
   test("recurring task with rrule parses", () => {
@@ -36,9 +80,11 @@ describe("ProposedAction schemas", () => {
       title: "take out the trash",
       due_at: "2026-09-13T19:00:00",
       rrule: "FREQ=WEEKLY;BYDAY=SU",
-      nag_interval_minutes: 30,
       assignee_name: null,
-      list_name: null,
+      checklist: null,
+      list_ref: null,
+      reminders: null,
+      event_ref: null,
     });
     expect(r.success).toBe(true);
   });
@@ -51,22 +97,18 @@ describe("ProposedAction schemas", () => {
         task_ref: "trash",
         new_title: null,
         new_due_at: "2026-09-14T19:00:00",
-        new_list_name: null,
         new_rrule: null,
-        new_nag_interval_minutes: null,
         stop_recurrence: null,
       }).success
     ).toBe(true);
-    // Change the whole series' recurrence + nag cadence.
+    // Change the whole series' recurrence.
     expect(
       ProposedActionSchema.safeParse({
         type: "update_task",
         task_ref: "trash",
         new_title: null,
         new_due_at: null,
-        new_list_name: null,
         new_rrule: "FREQ=WEEKLY;BYDAY=MO",
-        new_nag_interval_minutes: 60,
         stop_recurrence: null,
       }).success
     ).toBe(true);
@@ -77,29 +119,42 @@ describe("ProposedAction schemas", () => {
         task_ref: "trash",
         new_title: null,
         new_due_at: null,
-        new_list_name: null,
         new_rrule: null,
-        new_nag_interval_minutes: null,
         stop_recurrence: true,
       }).success
     ).toBe(true);
   });
 
-  test("nag interval is bounded (5 min to 24 h)", () => {
-    const make = (mins: number) => ({
-      type: "update_task",
-      task_ref: "trash",
-      new_title: null,
-      new_due_at: null,
-      new_list_name: null,
-      new_rrule: null,
-      new_nag_interval_minutes: mins,
-      stop_recurrence: null,
-    });
-    expect(ProposedActionSchema.safeParse(make(5)).success).toBe(true);
-    expect(ProposedActionSchema.safeParse(make(1440)).success).toBe(true);
-    expect(ProposedActionSchema.safeParse(make(4)).success).toBe(false);
-    expect(ProposedActionSchema.safeParse(make(1441)).success).toBe(false);
+  test("nested create_task checklist and reminders parse", () => {
+    expect(
+      ProposedActionSchema.safeParse({
+        type: "create_task",
+        title: "Get spaghetti stuff",
+        due_at: "2026-09-13T17:00:00",
+        rrule: null,
+        assignee_name: null,
+        checklist: { title: "Spaghetti ingredients", items: ["spaghetti", "beef"] },
+        list_ref: null,
+        reminders: [{ fire_at: "2026-09-13T17:00:00", rrule: null }],
+        event_ref: null,
+      }).success
+    ).toBe(true);
+  });
+
+  test("create_reminder requires parent refs as nullable keys", () => {
+    expect(
+      ProposedActionSchema.safeParse({
+        type: "create_reminder",
+        title: "check the oven",
+        fire_at: "2026-09-09T17:00:00",
+        rrule: "FREQ=HOURLY;INTERVAL=4",
+        task_ref: "trash",
+        event_ref: null,
+        until_completed: true,
+        target: "sender",
+        target_name: null,
+      }).success
+    ).toBe(true);
   });
 
   test("cancel_task can target the whole series", () => {
@@ -114,7 +169,7 @@ describe("ProposedAction schemas", () => {
 
   test("list CRUD actions parse", () => {
     const actions = [
-      { type: "create_list", name: "groceries", items: ["milk", "eggs"] },
+      { type: "create_list", name: "groceries", items: ["milk", "eggs"], task_ref: null, event_ref: null },
       { type: "add_list_items", list_name: "groceries", items: ["cheese"] },
       { type: "update_list_item", list_name: "groceries", item_ref: "cheese", new_title: "cheddar" },
       { type: "set_list_item_completed", list_name: "groceries", item_ref: "milk", completed: true },
@@ -130,13 +185,53 @@ describe("ProposedAction schemas", () => {
     const r = ProposedActionSchema.safeParse({
       type: "create_event",
       title: "soccer practice",
+      notes: null,
       start_at: "2026-09-10T17:00:00",
       end_at: "2026-09-10T18:00:00",
       location: null,
       attendee_names: null,
       rrule: "FREQ=WEEKLY;BYDAY=TH;UNTIL=20261215T235959",
+      list_ref: null,
+      reminders: null,
     });
     expect(r.success).toBe(true);
+  });
+
+  test("nested create links parse", () => {
+    expect(
+      ProposedActionSchema.safeParse({
+        type: "create_list",
+        name: "packing",
+        items: ["sunscreen"],
+        task_ref: "pack the car",
+        event_ref: "beach trip",
+      }).success
+    ).toBe(true);
+    expect(
+      ProposedActionSchema.safeParse({
+        type: "create_event",
+        title: "Beach trip",
+        notes: "Bring sunscreen and the cooler.",
+        start_at: "2026-09-10T10:00:00",
+        end_at: null,
+        location: null,
+        attendee_names: null,
+        rrule: null,
+        list_ref: "packing",
+        reminders: [{ fire_at: "2026-09-10T08:00:00", rrule: null }],
+      }).success
+    ).toBe(true);
+    expect(
+      ProposedActionSchema.safeParse({
+        type: "update_reminder",
+        reminder_ref: "leave by 8",
+        new_title: null,
+        new_fire_at: null,
+        new_rrule: null,
+        task_ref: "pack the car",
+        event_ref: null,
+      }).success
+    ).toBe(true);
   });
 
   test("add_comment parses for task/event/list subjects only", () => {

@@ -21,18 +21,13 @@ export class InboundRelay {
     if (!text) return; // attachments/reactions
     if (!msg.chat_guid || !msg.guid) return;
 
-    if (msg.is_from_me) {
-      const isBotEcho =
-        text.startsWith(this.config.BOT_MESSAGE_PREFIX) || this.state.wasSentByUs(msg.guid);
-      if (this.config.FAMBOT_PROFILE === "production" || isBotEcho) return;
-      // local-dev: un-prefixed self messages are real user input
-    }
+    if (text.startsWith(this.config.BOT_MESSAGE_PREFIX) || this.state.wasSentByUs(msg.guid)) return;
 
     const payload = {
       guid: msg.guid,
       chatGuid: msg.chat_guid,
       text,
-      senderHandle: msg.is_from_me ? "me" : (msg.sender ?? "unknown"),
+      senderHandle: msg.sender ?? "unknown",
       senderName: msg.sender_name,
       isGroup: msg.chat_guid.includes(";+;"),
       sentAt: msg.created_at ? new Date(msg.created_at).toISOString() : new Date().toISOString(),

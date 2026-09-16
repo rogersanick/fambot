@@ -231,7 +231,7 @@ describe("executor comment actions (integration)", () => {
       { type: "add_comment", subject_type: "task", subject_ref: "wash", text: "started" },
     ]);
     expect(outcome.executions[0]!.status).toBe("clarify");
-    expect(outcome.reply).toContain("Which todo?");
+    expect(outcome.reply).toContain("Which task?");
   });
 
   test("comments on events resolve by title ref", async () => {

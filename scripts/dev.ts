@@ -403,23 +403,31 @@ async function main() {
     cwd: resolve(root, "apps/worker"),
     env,
   });
+  const noWeb = process.argv.includes("--no-web");
+  const noBridge = process.argv.includes("--no-bridge");
   const appUrl = new URL(env.APP_URL ?? "http://localhost:5173");
-  startProcess({
-    name: "web",
-    command: "bunx",
-    commandArgs: [
-      "vite",
-      "--host",
-      appUrl.hostname,
-      "--port",
-      appUrl.port || (appUrl.protocol === "https:" ? "443" : "80"),
-      "--strictPort",
-    ],
-    cwd: resolve(root, "apps/desktop"),
-    env,
-  });
+  if (noWeb) {
+    log("setup", "web skipped (--no-web); start the iPhone app with bun ios");
+  } else {
+    startProcess({
+      name: "web",
+      command: "bunx",
+      commandArgs: [
+        "vite",
+        "--host",
+        appUrl.hostname,
+        "--port",
+        appUrl.port || (appUrl.protocol === "https:" ? "443" : "80"),
+        "--strictPort",
+      ],
+      cwd: resolve(root, "apps/desktop"),
+      env,
+    });
+  }
 
-  if (process.platform === "darwin" && commandExists(bridgeEnv.IMSG_BIN || "imsg")) {
+  if (noBridge) {
+    log("setup", "iMessage bridge skipped (--no-bridge); run bun bridge:local or bun bridge:prod");
+  } else if (process.platform === "darwin" && commandExists(bridgeEnv.IMSG_BIN || "imsg")) {
     startProcess({
       name: "bridge",
       command: "bun",
@@ -433,7 +441,12 @@ async function main() {
   }
 
   startTelnyxTunnel(env);
-  log("setup", `ready: ${env.APP_URL ?? "http://localhost:5173"}`);
+  log(
+    "setup",
+    noWeb
+      ? `ready (backend only): API on ${env.PORT ?? "8787"} — run bun ios in another terminal`
+      : `ready: ${env.APP_URL ?? "http://localhost:5173"}`
+  );
 }
 
 process.on("SIGINT", () => void shutdown());

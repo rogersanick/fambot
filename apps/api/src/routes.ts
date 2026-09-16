@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import { z } from "zod";
 import {
   calendarConnections,
@@ -11,9 +11,16 @@ import {
   identities,
   members,
   messages,
+  reminders,
   tasks,
 } from "@fambot/database";
-import { normalizePhone, type InboundMessage } from "@fambot/shared";
+import {
+  conversationFocusExternalId,
+  normalizePhone,
+  type ArtifactType,
+  type InboundMessage,
+} from "@fambot/shared";
+import { loadArtifactPreview, parseArtifactParams } from "./artifact-preview";
 import { createEventEntry } from "@fambot/domain";
 import {
   exchangeCode,
@@ -142,30 +149,20 @@ api.get("/households/:hid", async (c) => {
   if (!member) return c.json({ error: "forbidden" }, 403);
   const [household] = await db.select().from(households).where(eq(households.id, hid));
   const memberRows = await db.select().from(members).where(eq(members.householdId, hid));
-  const identityRows = await db
-    .select()
-    .from(identities)
-    .where(
-      eq(identities.memberId, memberRows[0]?.id ?? "00000000-0000-0000-0000-000000000000")
-    );
-  // fetch identities for all members
-  const allIdentities =
-    memberRows.length > 0
-      ? await db.select().from(identities)
-      : identityRows;
-  const memberIds = new Set(memberRows.map((m) => m.id));
-  const inviteRows =
-    memberRows.length > 0
-      ? await db
-          .select({ invite: householdInvites, member: members })
-          .from(householdInvites)
-          .innerJoin(members, eq(householdInvites.memberId, members.id))
-          .where(eq(members.householdId, hid))
+  const memberIds = memberRows.map((m) => m.id);
+  const identityRows =
+    memberIds.length > 0
+      ? await db.select().from(identities).where(inArray(identities.memberId, memberIds))
       : [];
+  const inviteRows = await db
+    .select({ invite: householdInvites, member: members })
+    .from(householdInvites)
+    .innerJoin(members, eq(householdInvites.memberId, members.id))
+    .where(eq(members.householdId, hid));
   return c.json({
     household,
     members: memberRows,
-    identities: allIdentities.filter((i) => memberIds.has(i.memberId)),
+    identities: identityRows,
     invites: inviteRows.map(({ invite, member: invitedMember }) => ({
       id: invite.id,
       memberId: invite.memberId,
@@ -536,19 +533,22 @@ async function getOrCreateAppChat(householdId: string, memberId: string) {
   return conv!;
 }
 
+async function listChatMessages(conversationId: string) {
+  return db
+    .select()
+    .from(messages)
+    .where(and(eq(messages.conversationId, conversationId), ne(messages.kind, "progress")))
+    .orderBy(asc(messages.sentAt))
+    .limit(200);
+}
+
 api.get("/households/:hid/chat", async (c) => {
   const user = c.get("user");
   const hid = c.req.param("hid");
   const member = await requireMember(user.id, hid);
   if (!member) return c.json({ error: "forbidden" }, 403);
   const conv = await getOrCreateAppChat(hid, member.id);
-  const rows = await db
-    .select()
-    .from(messages)
-    .where(eq(messages.conversationId, conv.id))
-    .orderBy(asc(messages.sentAt))
-    .limit(200);
-  return c.json({ conversationId: conv.id, messages: rows });
+  return c.json({ conversationId: conv.id, messages: await listChatMessages(conv.id) });
 });
 
 const SendMessageSchema = z.object({ text: z.string().min(1).max(4000) });
@@ -560,6 +560,78 @@ api.post("/households/:hid/chat", async (c) => {
   if (!member) return c.json({ error: "forbidden" }, 403);
   const body = SendMessageSchema.parse(await c.req.json());
   const conv = await getOrCreateAppChat(hid, member.id);
+
+  const inbound: InboundMessage = {
+    id: crypto.randomUUID(),
+    channel: "app_chat",
+    conversationExternalId: conv.id,
+    sender: { externalId: member.id, displayName: member.displayName },
+    text: body.text,
+    sentAt: new Date().toISOString(),
+    context: { isGroup: false, botWasMentioned: true, isReplyToBot: false },
+  };
+  const result = await processInbound(inbound);
+  return c.json({ conversationId: conv.id, reply: result?.reply ?? null });
+});
+
+async function getOrCreateItemChat(householdId: string, type: ArtifactType, id: string, memberId: string) {
+  const externalId = conversationFocusExternalId(type, id);
+  const [existing] = await db
+    .select()
+    .from(conversations)
+    .where(and(eq(conversations.channel, "app_chat"), eq(conversations.externalId, externalId)));
+  if (existing) {
+    await db
+      .insert(conversationParticipants)
+      .values({ conversationId: existing.id, memberId })
+      .onConflictDoNothing();
+    return existing;
+  }
+  const [conv] = await db
+    .insert(conversations)
+    .values({
+      householdId,
+      channel: "app_chat",
+      kind: "direct",
+      name: `${type}:${id}`,
+      externalId,
+    })
+    .returning();
+  await db
+    .insert(conversationParticipants)
+    .values({ conversationId: conv!.id, memberId })
+    .onConflictDoNothing();
+  return conv!;
+}
+
+async function loadHouseholdArtifact(hid: string, type: string, id: string) {
+  const parsed = parseArtifactParams(type, id);
+  if (!parsed) return null;
+  const record = await loadArtifactPreview(db, parsed.type, parsed.id);
+  if (!record || record.householdId !== hid) return null;
+  return parsed;
+}
+
+api.get("/households/:hid/items/:type/:id/chat", async (c) => {
+  const user = c.get("user");
+  const hid = c.req.param("hid");
+  const member = await requireMember(user.id, hid);
+  if (!member) return c.json({ error: "forbidden" }, 403);
+  const artifact = await loadHouseholdArtifact(hid, c.req.param("type"), c.req.param("id"));
+  if (!artifact) return c.json({ error: "not_found" }, 404);
+  const conv = await getOrCreateItemChat(hid, artifact.type, artifact.id, member.id);
+  return c.json({ conversationId: conv.id, messages: await listChatMessages(conv.id) });
+});
+
+api.post("/households/:hid/items/:type/:id/chat", async (c) => {
+  const user = c.get("user");
+  const hid = c.req.param("hid");
+  const member = await requireMember(user.id, hid);
+  if (!member) return c.json({ error: "forbidden" }, 403);
+  const artifact = await loadHouseholdArtifact(hid, c.req.param("type"), c.req.param("id"));
+  if (!artifact) return c.json({ error: "not_found" }, 404);
+  const body = SendMessageSchema.parse(await c.req.json());
+  const conv = await getOrCreateItemChat(hid, artifact.type, artifact.id, member.id);
 
   const inbound: InboundMessage = {
     id: crypto.randomUUID(),
@@ -587,6 +659,9 @@ const CreateReminderBody = z.object({
   title: z.string().min(1),
   fireAt: z.string().datetime({ offset: true }).nullable().optional(),
   rrule: z.string().nullable().optional(),
+  taskId: z.string().uuid().nullable().optional(),
+  eventId: z.string().uuid().nullable().optional(),
+  untilCompleted: z.boolean().optional(),
 });
 
 api.post("/households/:hid/reminders", async (c) => {
@@ -596,15 +671,60 @@ api.post("/households/:hid/reminders", async (c) => {
   if (!member) return c.json({ error: "forbidden" }, 403);
   const [household] = await db.select().from(households).where(eq(households.id, hid));
   const body = CreateReminderBody.parse(await c.req.json());
+  let taskId = body.taskId ?? null;
+  const eventId = body.eventId ?? null;
+  if (taskId && !(await services.tasks.get(hid, taskId))) {
+    return c.json({ error: "task_not_found" }, 404);
+  }
+  if (eventId && !(await services.events.get(hid, eventId))) {
+    return c.json({ error: "event_not_found" }, 404);
+  }
+  if (taskId && eventId) {
+    return c.json({ error: "reminder cannot attach to both a task and an event" }, 400);
+  }
   const reminder = await services.reminders.create({
     householdId: hid,
     creatorMemberId: member.id,
     title: body.title,
+    taskId,
+    eventId,
     targetType: "member",
     targetMemberId: member.id,
     fireAt: body.fireAt ? new Date(body.fireAt) : null,
     rrule: body.rrule ?? null,
     timezone: household!.timezone,
+    untilCompleted: body.untilCompleted ?? Boolean(taskId && body.rrule),
+  });
+  return c.json({ reminder });
+});
+
+const PatchReminderBody = z.object({
+  taskId: z.string().uuid().nullable().optional(),
+  eventId: z.string().uuid().nullable().optional(),
+});
+
+api.patch("/households/:hid/reminders/:rid", async (c) => {
+  const user = c.get("user");
+  const hid = c.req.param("hid");
+  if (!(await requireMember(user.id, hid))) return c.json({ error: "forbidden" }, 403);
+  const [existing] = await db
+    .select()
+    .from(reminders)
+    .where(and(eq(reminders.id, c.req.param("rid")), eq(reminders.householdId, hid)));
+  if (!existing) return c.json({ error: "not_found" }, 404);
+  const body = PatchReminderBody.parse(await c.req.json());
+  if (body.taskId && body.eventId) {
+    return c.json({ error: "reminder cannot attach to both a task and an event" }, 400);
+  }
+  if (body.taskId && !(await services.tasks.get(hid, body.taskId))) {
+    return c.json({ error: "task_not_found" }, 404);
+  }
+  if (body.eventId && !(await services.events.get(hid, body.eventId))) {
+    return c.json({ error: "event_not_found" }, 404);
+  }
+  const reminder = await services.reminders.update(existing.id, {
+    taskId: body.taskId,
+    eventId: body.eventId,
   });
   return c.json({ reminder });
 });
@@ -623,9 +743,16 @@ api.get("/households/:hid/tasks", async (c) => {
   const user = c.get("user");
   const hid = c.req.param("hid");
   if (!(await requireMember(user.id, hid))) return c.json({ error: "forbidden" }, 403);
+  const listRows = await services.lists.list(hid);
+  const listsWithItems = await Promise.all(
+    listRows.map(async (list) => ({
+      ...list,
+      items: await services.lists.items(hid, list.id),
+    }))
+  );
   return c.json({
     tasks: await services.tasks.list(hid),
-    lists: await services.lists.list(hid),
+    lists: listsWithItems,
     series: await services.taskSeries.list(hid),
   });
 });
@@ -633,12 +760,26 @@ api.get("/households/:hid/tasks", async (c) => {
 const CreateTaskBody = z.object({
   title: z.string().min(1),
   notes: z.string().optional(),
-  listId: z.string().uuid().nullable().optional(),
+  eventId: z.string().uuid().nullable().optional(),
   assigneeMemberId: z.string().uuid().nullable().optional(),
   dueAt: z.string().datetime({ offset: true }).nullable().optional(),
-  nagIntervalMin: z.number().int().min(5).max(1440).optional(),
   /** RFC-5545 recurrence; requires dueAt (the first occurrence). */
   rrule: z.string().min(1).nullable().optional(),
+  checklist: z
+    .object({
+      title: z.string().min(1),
+      items: z.array(z.string().min(1)).max(50),
+    })
+    .optional(),
+  /** Attach an existing standing list instead of creating a nested checklist. */
+  listId: z.string().uuid().nullable().optional(),
+  reminder: z
+    .object({
+      fireAt: z.string().datetime({ offset: true }),
+      rrule: z.string().nullable().optional(),
+      untilCompleted: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 api.post("/households/:hid/tasks", async (c) => {
@@ -648,45 +789,71 @@ api.post("/households/:hid/tasks", async (c) => {
   if (!member) return c.json({ error: "forbidden" }, 403);
   const [household] = await db.select().from(households).where(eq(households.id, hid));
   const body = CreateTaskBody.parse(await c.req.json());
-  if (body.listId && !(await services.lists.get(hid, body.listId))) {
-    return c.json({ error: "list_not_found" }, 404);
+  if (body.eventId && !(await services.events.get(hid, body.eventId))) {
+    return c.json({ error: "event_not_found" }, 404);
   }
+  let task;
+  let series = null;
   if (body.rrule) {
-    if (!body.dueAt) return c.json({ error: "a recurring todo needs a first due date" }, 400);
-    const { series, task } = await services.taskSeries.create({
+    if (!body.dueAt) return c.json({ error: "a recurring task needs a first due date" }, 400);
+    const created = await services.taskSeries.create({
       householdId: hid,
       creatorMemberId: member.id,
       title: body.title,
       notes: body.notes,
-      listId: body.listId ?? null,
       assigneeMemberId: body.assigneeMemberId ?? null,
       firstDueAt: new Date(body.dueAt),
       rrule: body.rrule,
       timezone: household!.timezone,
-      nagIntervalMin: body.nagIntervalMin ?? null,
     });
-    return c.json({ task, series });
+    task = created.task;
+    series = created.series;
+    if (body.eventId) task = (await services.tasks.update(task.id, { eventId: body.eventId })) ?? task;
+  } else {
+    task = await services.tasks.create({
+      householdId: hid,
+      creatorMemberId: member.id,
+      title: body.title,
+      notes: body.notes,
+      eventId: body.eventId ?? null,
+      assigneeMemberId: body.assigneeMemberId ?? null,
+      dueAt: body.dueAt ? new Date(body.dueAt) : null,
+      timezone: household!.timezone,
+    });
   }
-  const task = await services.tasks.create({
-    householdId: hid,
-    creatorMemberId: member.id,
-    title: body.title,
-    notes: body.notes,
-    listId: body.listId ?? null,
-    assigneeMemberId: body.assigneeMemberId ?? null,
-    dueAt: body.dueAt ? new Date(body.dueAt) : null,
-    timezone: household!.timezone,
-    nagIntervalMin: body.nagIntervalMin ?? null,
-  });
-  return c.json({ task });
+  if (body.checklist) {
+    const list = await services.lists.create(hid, body.checklist.title, member.id, task.id);
+    if (body.checklist.items.length) {
+      await services.lists.addItems(hid, list.id, body.checklist.items);
+    }
+  } else if (body.listId) {
+    if (!(await services.lists.get(hid, body.listId))) {
+      return c.json({ error: "list_not_found" }, 404);
+    }
+    await services.lists.update(hid, body.listId, { taskId: task.id });
+  }
+  if (body.reminder) {
+    await services.reminders.create({
+      householdId: hid,
+      creatorMemberId: member.id,
+      title: body.title,
+      taskId: task.id,
+      targetType: "member",
+      targetMemberId: member.id,
+      fireAt: new Date(body.reminder.fireAt),
+      rrule: body.reminder.rrule ?? null,
+      timezone: household!.timezone,
+      untilCompleted: body.reminder.untilCompleted ?? Boolean(body.reminder.rrule),
+    });
+  }
+  return c.json({ task, series });
 });
 
 const PatchTaskBody = z.object({
   status: z.enum(["open", "done", "cancelled"]).optional(),
   title: z.string().min(1).optional(),
   dueAt: z.string().datetime({ offset: true }).nullable().optional(),
-  listId: z.string().uuid().nullable().optional(),
-  nagIntervalMin: z.number().int().min(5).max(1440).optional(),
+  eventId: z.string().uuid().nullable().optional(),
 });
 
 api.patch("/households/:hid/tasks/:tid", async (c) => {
@@ -700,8 +867,8 @@ api.patch("/households/:hid/tasks/:tid", async (c) => {
     .where(and(eq(tasks.id, tid), eq(tasks.householdId, hid)));
   if (!existing) return c.json({ error: "not_found" }, 404);
   const body = PatchTaskBody.parse(await c.req.json());
-  if (body.listId && !(await services.lists.get(hid, body.listId))) {
-    return c.json({ error: "list_not_found" }, 404);
+  if (body.eventId && !(await services.events.get(hid, body.eventId))) {
+    return c.json({ error: "event_not_found" }, 404);
   }
   if (body.status === "done") {
     const done = await services.tasks.complete(tid);
@@ -714,34 +881,12 @@ api.patch("/households/:hid/tasks/:tid", async (c) => {
   const patch: Record<string, unknown> = {};
   if (body.title) patch.title = body.title;
   if (body.dueAt !== undefined) {
-    // Postpone/reschedule THIS occurrence only: dueAt is the effective
-    // deadline, scheduledFor keeps the series slot untouched.
     patch.dueAt = body.dueAt ? new Date(body.dueAt) : null;
-    patch.nextNudgeAt = body.dueAt ? new Date(body.dueAt) : null;
   }
-  if (body.listId !== undefined) patch.listId = body.listId;
-  if (body.nagIntervalMin !== undefined) {
-    patch.nagIntervalMin = body.nagIntervalMin;
-    // Predictable cadence reset: overdue → next nudge one interval from now;
-    // future-due → nudging still starts at the due time.
-    const effectiveDue = (patch.dueAt as Date | null | undefined) ?? existing.dueAt;
-    if (existing.status === "open" && effectiveDue) {
-      patch.nextNudgeAt =
-        effectiveDue.getTime() <= Date.now()
-          ? new Date(Date.now() + body.nagIntervalMin * 60_000)
-          : effectiveDue;
-    }
-  }
+  if (body.eventId !== undefined) patch.eventId = body.eventId;
   if (body.status === "open") {
     patch.status = "open";
     patch.completedAt = null;
-    // Reopen: overdue resumes nudging now, future resumes at its due time.
-    const effectiveDue = (patch.dueAt as Date | null | undefined) ?? existing.dueAt;
-    patch.nextNudgeAt = effectiveDue
-      ? effectiveDue.getTime() <= Date.now()
-        ? new Date()
-        : effectiveDue
-      : null;
   }
   const task = await services.tasks.update(tid, patch);
   return c.json({ task });
@@ -752,8 +897,6 @@ api.patch("/households/:hid/tasks/:tid", async (c) => {
 const PatchSeriesBody = z.object({
   title: z.string().min(1).optional(),
   rrule: z.string().min(1).optional(),
-  nagIntervalMin: z.number().int().min(5).max(1440).optional(),
-  listId: z.string().uuid().nullable().optional(),
   assigneeMemberId: z.string().uuid().nullable().optional(),
 });
 
@@ -762,9 +905,6 @@ api.patch("/households/:hid/task-series/:sid", async (c) => {
   const hid = c.req.param("hid");
   if (!(await requireMember(user.id, hid))) return c.json({ error: "forbidden" }, 403);
   const body = PatchSeriesBody.parse(await c.req.json());
-  if (body.listId && !(await services.lists.get(hid, body.listId))) {
-    return c.json({ error: "list_not_found" }, 404);
-  }
   const series = await services.taskSeries.update(hid, c.req.param("sid"), body);
   if (!series) return c.json({ error: "not_found" }, 404);
   return c.json({ series });
@@ -779,7 +919,11 @@ api.delete("/households/:hid/task-series/:sid", async (c) => {
   return c.json({ ok: true });
 });
 
-const ListBody = z.object({ name: z.string().min(1) });
+const ListBody = z.object({
+  name: z.string().min(1).optional(),
+  taskId: z.string().uuid().nullable().optional(),
+  eventId: z.string().uuid().nullable().optional(),
+});
 
 api.post("/households/:hid/lists", async (c) => {
   const user = c.get("user");
@@ -787,7 +931,16 @@ api.post("/households/:hid/lists", async (c) => {
   const member = await requireMember(user.id, hid);
   if (!member) return c.json({ error: "forbidden" }, 403);
   const body = ListBody.parse(await c.req.json());
-  return c.json({ list: await services.lists.create(hid, body.name, member.id) });
+  if (!body.name) return c.json({ error: "name is required" }, 400);
+  if (body.taskId && !(await services.tasks.get(hid, body.taskId))) {
+    return c.json({ error: "task_not_found" }, 404);
+  }
+  if (body.eventId && !(await services.events.get(hid, body.eventId))) {
+    return c.json({ error: "event_not_found" }, 404);
+  }
+  return c.json({
+    list: await services.lists.create(hid, body.name, member.id, body.taskId, body.eventId),
+  });
 });
 
 api.patch("/households/:hid/lists/:lid", async (c) => {
@@ -795,7 +948,13 @@ api.patch("/households/:hid/lists/:lid", async (c) => {
   const hid = c.req.param("hid");
   if (!(await requireMember(user.id, hid))) return c.json({ error: "forbidden" }, 403);
   const body = ListBody.parse(await c.req.json());
-  const list = await services.lists.rename(hid, c.req.param("lid"), body.name);
+  if (body.taskId && !(await services.tasks.get(hid, body.taskId))) {
+    return c.json({ error: "task_not_found" }, 404);
+  }
+  if (body.eventId && !(await services.events.get(hid, body.eventId))) {
+    return c.json({ error: "event_not_found" }, 404);
+  }
+  const list = await services.lists.update(hid, c.req.param("lid"), body);
   if (!list) return c.json({ error: "not_found" }, 404);
   return c.json({ list });
 });
@@ -811,6 +970,46 @@ api.delete("/households/:hid/lists/:lid", async (c) => {
   return c.json({ ok: true });
 });
 
+const AddListItemsBody = z.object({ items: z.array(z.string().min(1)).min(1).max(50) });
+
+api.post("/households/:hid/lists/:lid/items", async (c) => {
+  const user = c.get("user");
+  const hid = c.req.param("hid");
+  if (!(await requireMember(user.id, hid))) return c.json({ error: "forbidden" }, 403);
+  const lid = c.req.param("lid");
+  if (!(await services.lists.get(hid, lid))) return c.json({ error: "not_found" }, 404);
+  const body = AddListItemsBody.parse(await c.req.json());
+  const items = await services.lists.addItems(hid, lid, body.items);
+  return c.json({ items });
+});
+
+const PatchListItemBody = z.object({
+  body: z.string().min(1).optional(),
+  completed: z.boolean().optional(),
+});
+
+api.patch("/households/:hid/lists/:lid/items/:iid", async (c) => {
+  const user = c.get("user");
+  const hid = c.req.param("hid");
+  if (!(await requireMember(user.id, hid))) return c.json({ error: "forbidden" }, 403);
+  const body = PatchListItemBody.parse(await c.req.json());
+  const patch: { body?: string; completedAt?: Date | null } = {};
+  if (body.body) patch.body = body.body;
+  if (body.completed !== undefined) patch.completedAt = body.completed ? new Date() : null;
+  const item = await services.lists.updateItem(hid, c.req.param("iid"), patch);
+  if (!item) return c.json({ error: "not_found" }, 404);
+  return c.json({ item });
+});
+
+api.delete("/households/:hid/lists/:lid/items/:iid", async (c) => {
+  const user = c.get("user");
+  const hid = c.req.param("hid");
+  if (!(await requireMember(user.id, hid))) return c.json({ error: "forbidden" }, 403);
+  const removed = await services.lists.removeItem(hid, c.req.param("iid"));
+  if (!removed) return c.json({ error: "not_found" }, 404);
+  return c.json({ ok: true });
+});
+
 // --- events --------------------------------------------------------------------
 
 api.get("/households/:hid/events", async (c) => {
@@ -819,7 +1018,12 @@ api.get("/households/:hid/events", async (c) => {
   if (!(await requireMember(user.id, hid))) return c.json({ error: "forbidden" }, 403);
   const start = c.req.query("start") ? new Date(c.req.query("start")!) : new Date(Date.now() - 30 * 86_400_000);
   const end = c.req.query("end") ? new Date(c.req.query("end")!) : new Date(Date.now() + 60 * 86_400_000);
-  return c.json({ events: await services.events.listRange(hid, start, end) });
+  const eventRows = await services.events.listRange(hid, start, end);
+  const linkedTasks = await services.tasks.list(hid);
+  return c.json({
+    events: eventRows,
+    tasks: linkedTasks.filter((t) => t.eventId),
+  });
 });
 
 const CreateEventBody = z.object({
@@ -830,6 +1034,13 @@ const CreateEventBody = z.object({
   notes: z.string().nullable().optional(),
   /** RFC-5545 recurrence; startsAt is the first occurrence. */
   rrule: z.string().min(1).nullable().optional(),
+  listId: z.string().uuid().nullable().optional(),
+  reminder: z
+    .object({
+      fireAt: z.string().datetime({ offset: true }),
+      rrule: z.string().nullable().optional(),
+    })
+    .optional(),
 });
 
 api.post("/households/:hid/events", async (c) => {
@@ -839,6 +1050,9 @@ api.post("/households/:hid/events", async (c) => {
   if (!member) return c.json({ error: "forbidden" }, 403);
   const [household] = await db.select().from(households).where(eq(households.id, hid));
   const body = CreateEventBody.parse(await c.req.json());
+  if (body.listId && !(await services.lists.get(hid, body.listId))) {
+    return c.json({ error: "list_not_found" }, 404);
+  }
   // Same orchestration as the chat path: Google gets the series when connected.
   const externalCalendar = googleEnabled
     ? await GoogleCalendarProvider.forUser(db, googleConfig(), user.id)
@@ -856,6 +1070,22 @@ api.post("/households/:hid/events", async (c) => {
     rrule: body.rrule ?? null,
     timezone: household!.timezone,
   });
+  if (body.listId) {
+    await services.lists.update(hid, body.listId, { eventId: event.id });
+  }
+  if (body.reminder) {
+    await services.reminders.create({
+      householdId: hid,
+      creatorMemberId: member.id,
+      title: body.title,
+      eventId: event.id,
+      targetType: "member",
+      targetMemberId: member.id,
+      fireAt: new Date(body.reminder.fireAt),
+      rrule: body.reminder.rrule ?? null,
+      timezone: household!.timezone,
+    });
+  }
   return c.json({ event });
 });
 

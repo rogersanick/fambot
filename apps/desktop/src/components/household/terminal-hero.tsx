@@ -18,12 +18,12 @@ export function TerminalHero({ lines }: TerminalHeroProps) {
   const [bootLines] = useState(lines);
 
   return (
-    <section className="bg-terminal border-terminal-border animate-fade-up relative overflow-hidden rounded-xl border p-4 shadow-sm sm:p-5">
+    <section className="bg-terminal border-terminal-border animate-fade-up relative h-28 overflow-hidden rounded-xl border p-4 shadow-sm sm:h-36 sm:p-5">
       <RobotMascot className="text-terminal-dim absolute top-3 right-4 hidden sm:block" />
       <FambotLogo className="text-terminal-foreground h-8 sm:h-11" />
       <Typewriter
         lines={bootLines}
-        className="text-terminal-dim mt-3 text-xs sm:text-sm"
+        className="text-terminal-dim mt-3 h-8 text-xs sm:h-10 sm:text-sm"
         cursorClassName="text-terminal-foreground"
       />
     </section>

@@ -3,6 +3,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { account, session, user, verification } from "@fambot/database";
 import { db } from "./context";
 import { env, googleEnabled } from "./env";
+import { trustedOrigins } from "./origins";
 
 /**
  * Better Auth: Google OAuth is the primary sign-in when configured;
@@ -30,7 +31,7 @@ export const auth = betterAuth({
         },
       }
     : {}),
-  trustedOrigins: [env.APP_URL, "http://localhost:5173", "http://localhost:1420", "tauri://localhost"],
+  trustedOrigins: (request) => trustedOrigins(env.APP_URL, request?.headers.get("origin")),
 });
 
 export type AuthUser = typeof auth.$Infer.Session.user;

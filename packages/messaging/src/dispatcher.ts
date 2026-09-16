@@ -14,9 +14,11 @@ import { TelnyxSmsChannel, getOrCreateSmsConversation } from "./telnyx";
 
 export type NotificationRequest = {
   householdId: string;
-  kind: "reminder" | "task_nudge";
-  /** Reminder or task id. */
+  kind: "reminder";
+  /** Reminder id. */
   sourceId: string;
+  /** Parent task when this notification is about an obligation (so "done" can resolve). */
+  taskId?: string | null;
   /** Deterministic occurrence marker (ISO of the scheduled slot). */
   occurrenceKey: string;
   /** Member target and/or the conversation the item originated from. */
@@ -28,8 +30,8 @@ export type DispatchOutcome = {
   /** Per-recipient delivery rows created in this dispatch (deduped rows excluded). */
   results: Array<{ channel: "sms" | "imessage"; status: string; recipient: string | null }>;
   /**
-   * SMS conversation of the targeted member, when one was used. Task nudges
-   * store this on the task so a bare SMS "done" resolves to the right task.
+   * SMS conversation of the targeted member, when one was used. Reminders
+   * about a task store this so a bare SMS "done" resolves to the right task.
    */
   smsConversationId: string | null;
 };
@@ -294,8 +296,8 @@ export class NotificationDispatcher {
       .insert(deliveries)
       .values({
         kind: req.kind,
-        reminderId: req.kind === "reminder" ? req.sourceId : null,
-        taskId: req.kind === "task_nudge" ? req.sourceId : null,
+        reminderId: req.sourceId,
+        taskId: req.taskId ?? null,
         conversationId: row.conversationId ?? null,
         memberId: row.memberId ?? null,
         channel: row.channel,

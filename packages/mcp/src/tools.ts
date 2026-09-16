@@ -9,6 +9,11 @@ import {
   CreateListSchema,
   CreateReminderSchema,
   CreateTaskSchema,
+  LinkListToEventSchema,
+  LinkListToTaskSchema,
+  LinkReminderToEventSchema,
+  LinkReminderToTaskSchema,
+  LinkTaskToEventSchema,
   DeleteListItemSchema,
   DeleteListSchema,
   GetCommentStatusSchema,
@@ -69,13 +74,13 @@ const DATETIME_NOTE =
 const actionTools: ToolDefinition[] = [
   actionTool(
     "create_reminder",
-    `Schedule a fire-and-forget reminder (one-shot or RRULE recurring) for the sender, the whole conversation, or a named household member. ${DATETIME_NOTE}`,
+    `Schedule a reminder attached to a Task or Event. If neither task_ref nor event_ref is set, a Task is created from the title. Repeating reminders on a Task stop when the task is completed. Never attach a reminder to a list. ${DATETIME_NOTE}`,
     CreateReminderSchema,
     true
   ),
   actionTool(
     "update_reminder",
-    "Update an existing scheduled reminder found by words from its title (reminder_ref). Null fields are left unchanged.",
+    "Update an existing scheduled reminder found by words from its title (reminder_ref). Null fields are left unchanged. Optional task_ref / event_ref re-parents it (never both).",
     UpdateReminderSchema,
     true
   ),
@@ -87,7 +92,7 @@ const actionTools: ToolDefinition[] = [
   ),
   actionTool(
     "create_task",
-    `Create a todo that Fambot nags about from due_at until completed. Use rrule for recurring series. Optional list_name files it on a list. ${DATETIME_NOTE}`,
+    `Create an obligation that stays open until someone completes it. Optional nested checklist (items are NEVER tasks) OR list_ref to attach an existing standing list, plus nested reminders and event_ref. Use rrule for recurring series. Prefer this single call over create_list + many tasks. ${DATETIME_NOTE}`,
     CreateTaskSchema,
     true
   ),
@@ -95,6 +100,36 @@ const actionTools: ToolDefinition[] = [
     "update_task",
     "Update an open task found by task_ref. new_due_at postpones only that occurrence; new_rrule changes the whole series; stop_recurrence true stops future occurrences.",
     UpdateTaskSchema,
+    true
+  ),
+  actionTool(
+    "link_task_to_event",
+    "Attach an existing open task to an existing calendar event (e.g. paperwork before a dentist appointment).",
+    LinkTaskToEventSchema,
+    true
+  ),
+  actionTool(
+    "link_list_to_task",
+    "Attach an existing checklist to an existing task (packing list for 'pack the car').",
+    LinkListToTaskSchema,
+    true
+  ),
+  actionTool(
+    "link_list_to_event",
+    "Attach an existing checklist to an existing event (packing list for a trip).",
+    LinkListToEventSchema,
+    true
+  ),
+  actionTool(
+    "link_reminder_to_task",
+    "Attach an existing reminder to an existing task. Most reminders should be about a task or event.",
+    LinkReminderToTaskSchema,
+    true
+  ),
+  actionTool(
+    "link_reminder_to_event",
+    "Attach an existing reminder to an existing event.",
+    LinkReminderToEventSchema,
     true
   ),
   actionTool(
@@ -111,20 +146,20 @@ const actionTools: ToolDefinition[] = [
   ),
   actionTool(
     "create_list",
-    "Create a checklist (idempotent on exact name). Optional items are the initial checklist entries.",
+    "Create a standing household checklist (idempotent on exact name). Items are never tasks. Optional task_ref and/or event_ref attach it. Use this for groceries/packing/baby-boho lists — not for obligations. Optional items are the initial entries.",
     CreateListSchema,
     true
   ),
   actionTool("rename_list", "Rename an existing list found by name words.", RenameListSchema, true),
   actionTool(
     "delete_list",
-    "Delete a list (household owner only). Its tasks move back to General.",
+    "Delete a list and its checklist items (household owner only).",
     DeleteListSchema,
     true
   ),
   actionTool(
     "add_list_items",
-    'Add checklist entries to an existing list. Use this for ordinary list changes like "add milk to groceries" — never add_comment.',
+    'Add checklist entries to an existing list. Use this for "add X to list Y for next time / later / when we go" — never create a Task or Reminder for that. Never add_comment.',
     AddListItemsSchema,
     true
   ),
@@ -144,7 +179,7 @@ const actionTools: ToolDefinition[] = [
   actionTool("get_list", "Read a list and its entries with completion state.", GetListSchema, false),
   actionTool(
     "create_event",
-    `Add a calendar event (synced to Google Calendar when the member has connected it). ${DATETIME_NOTE}`,
+    `Add a calendar event (synced to Google Calendar when the member has connected it). notes is the event description/body — put details there, not in a reminder. Optional list_ref attaches an existing checklist; optional nested reminders are attached objects with fire times. ${DATETIME_NOTE}`,
     CreateEventSchema,
     true
   ),
@@ -214,14 +249,14 @@ const readTools: ToolDefinition[] = [
       const rows = await ctx.services.lists.list(ctx.householdId);
       return executed(
         `${rows.length} list(s).`,
-        rows.map((l) => ({ id: l.id, name: l.name }))
+        rows.map((l) => ({ id: l.id, name: l.name, taskId: l.taskId, eventId: l.eventId }))
       );
     },
   },
   {
     name: "list_tasks",
     description:
-      "List household tasks/todos (newest first, up to 100). Entries with a listId are checklist items; listId null means a standalone todo.",
+      "List household tasks (newest first, up to 100). These are obligations only — checklist items are never included.",
     mutating: false,
     inputSchema: z.object({}),
     handler: async (ctx) => {
@@ -233,7 +268,7 @@ const readTools: ToolDefinition[] = [
           title: t.title,
           status: t.status,
           dueAtLocal: t.dueAt ? toLocalIso(t.dueAt, ctx.timezone) : null,
-          listId: t.listId,
+          eventId: t.eventId,
           seriesId: t.seriesId,
           assigneeMemberId: t.assigneeMemberId,
         }))
@@ -255,6 +290,9 @@ const readTools: ToolDefinition[] = [
           status: r.status,
           nextFireAtLocal: r.nextFireAt ? toLocalIso(r.nextFireAt, ctx.timezone) : null,
           rrule: r.rrule,
+          taskId: r.taskId,
+          eventId: r.eventId,
+          untilCompleted: r.untilCompleted,
         }))
       );
     },
@@ -279,6 +317,7 @@ const readTools: ToolDefinition[] = [
         rows.map((e) => ({
           id: e.id,
           title: e.title,
+          notes: e.notes,
           startsAtLocal: toLocalIso(e.startsAt, ctx.timezone),
           endsAtLocal: e.endsAt ? toLocalIso(e.endsAt, ctx.timezone) : null,
           location: e.location,

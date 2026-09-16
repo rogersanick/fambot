@@ -31,6 +31,7 @@ export interface ExternalCalendar {
     startsAt: Date;
     endsAt: Date | null;
     location: string | null;
+    notes: string | null;
     timezone: string;
     /** RFC-5545 rule — Google receives the whole series, not occurrences. */
     rrule: string | null;
@@ -101,6 +102,7 @@ export async function createEventEntry(input: {
       startsAt: input.startsAt,
       endsAt: input.endsAt,
       location: input.location,
+      notes: input.notes,
       timezone: input.timezone,
       rrule: input.rrule,
     });
@@ -189,50 +191,70 @@ async function executeOne(
       if (fireAt && !action.rrule && fireAt.getTime() < Date.now() - 60_000) {
         throw new ResolutionError(`${formatLocal(fireAt, timezone)} is in the past`);
       }
-      let targetType: "member" | "conversation" = "member";
-      let targetMemberId: string | undefined = ctx.actor.memberId;
-      // Origin conversation doubles as the delivery fallback for member targets.
-      let targetConversationId: string | undefined = ctx.conversation?.id;
-      let who = "you";
-      if (action.target === "conversation") {
-        if (!ctx.conversation) throw new ResolutionError("no conversation to remind");
-        targetType = "conversation";
-        targetMemberId = undefined;
-        targetConversationId = ctx.conversation.id;
-        who = "everyone here";
-      } else if (action.target === "named_person") {
-        const person = resolvePersonName(
-          action.target_name ?? "",
-          ctx.participants,
-          ctx.householdMembers
+      const targeting = resolveReminderTarget(ctx, action.target, action.target_name);
+      if ("clarify" in targeting) return { text: targeting.clarify, result: null, status: "clarify" };
+
+      let taskId: string | null = null;
+      let eventId: string | null = null;
+      let inferredTask = false;
+      if (action.event_ref) {
+        const resolved = await resolveOne(
+          await services.events.findByRef(ctx.householdId, action.event_ref),
+          "event",
+          action.event_ref
         );
-        if (!person) {
-          return {
-            text: `I don't know who "${action.target_name}" is — who do you mean?`,
-            result: null,
-            status: "clarify",
-          };
-        }
-        targetMemberId = person.id;
-        who = person.displayName;
+        if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+        eventId = resolved.id;
+      } else if (action.task_ref) {
+        const resolved = await resolveOne(
+          await services.tasks.findByRef(ctx.householdId, action.task_ref),
+          "task",
+          action.task_ref
+        );
+        if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+        taskId = resolved.id;
+      } else {
+        const task = await services.tasks.create({
+          householdId: ctx.householdId,
+          creatorMemberId: ctx.actor.memberId,
+          conversationId: ctx.conversation?.id,
+          title: action.title,
+          dueAt: fireAt,
+          timezone,
+        });
+        taskId = task.id;
+        inferredTask = true;
       }
+
+      const untilCompleted =
+        Boolean(taskId) && (action.until_completed ?? Boolean(action.rrule));
       const reminder = await services.reminders.create({
         householdId: ctx.householdId,
         creatorMemberId: ctx.actor.memberId,
         title: action.title,
-        targetType,
-        targetMemberId,
-        targetConversationId,
+        taskId,
+        eventId,
+        targetType: targeting.targetType,
+        targetMemberId: targeting.targetMemberId,
+        targetConversationId: targeting.targetConversationId,
         fireAt,
         rrule: action.rrule,
         timezone,
+        untilCompleted,
       });
       const whenText = reminder.nextFireAt
-        ? formatLocal(reminder.nextFireAt, timezone) + (action.rrule ? " (recurring)" : "")
+        ? formatLocal(reminder.nextFireAt, timezone) +
+          (action.rrule ? (untilCompleted ? " (every occurrence until it's done)" : " (recurring)") : "")
         : "per the schedule";
+      const parentText = inferredTask ? ` I'll keep "${action.title}" open as a task.` : "";
       return {
-        text: `✓ Got it — I'll remind ${who} ${whenText}: ${action.title}`,
-        result: { reminderId: reminder.id, nextFireAt: reminder.nextFireAt },
+        text: `✓ Got it — I'll remind ${targeting.who} ${whenText}: ${action.title}.${parentText}`,
+        result: {
+          reminderId: reminder.id,
+          taskId,
+          eventId,
+          nextFireAt: reminder.nextFireAt,
+        },
         status: "executed",
       };
     }
@@ -256,6 +278,30 @@ async function executeOne(
         patch.nextFireAt = at;
       }
       if (action.new_rrule) patch.rrule = action.new_rrule;
+      if (action.task_ref && action.event_ref) {
+        return {
+          text: "A reminder can attach to a task or an event, not both.",
+          result: null,
+          status: "clarify",
+        };
+      }
+      if (action.task_ref) {
+        const resolved = await resolveOne(
+          await services.tasks.findByRef(ctx.householdId, action.task_ref),
+          "task",
+          action.task_ref
+        );
+        if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+        patch.taskId = resolved.id;
+      } else if (action.event_ref) {
+        const resolved = await resolveOne(
+          await services.events.findByRef(ctx.householdId, action.event_ref),
+          "event",
+          action.event_ref
+        );
+        if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+        patch.eventId = resolved.id;
+      }
       const updated = await services.reminders.update(target.id, patch);
       return {
         text: `✓ Updated "${updated.title}"${updated.nextFireAt ? ` — ${formatLocal(updated.nextFireAt, timezone)}` : ""}`,
@@ -293,25 +339,22 @@ async function executeOne(
         assigneeMemberId = person.id;
         assigneeName = ` for ${person.displayName}`;
       }
-      let listId: string | null = null;
-      if (action.list_name) {
-        const matches = await services.lists.findByRef(ctx.householdId, action.list_name);
-        if (matches.length > 1) {
-          return {
-            text: `Which list? ${matches.map((list) => `"${list.name}"`).join(", ")}`,
-            result: null,
-            status: "clarify",
-          };
-        }
-        const list =
-          matches[0] ??
-          (await services.lists.create(ctx.householdId, action.list_name, ctx.actor.memberId));
-        listId = list.id;
+      let eventId: string | null = null;
+      if (action.event_ref) {
+        const resolved = await resolveOne(
+          await services.events.findByRef(ctx.householdId, action.event_ref),
+          "event",
+          action.event_ref
+        );
+        if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+        eventId = resolved.id;
       }
+
+      let taskId: string;
+      let seriesId: string | null = null;
+      let firstDueAt = dueAt;
       if (action.rrule) {
-        // Recurring task → series; occurrences spawn on their fixed schedule.
-        const firstDueAt =
-          dueAt ?? nextOccurrence(action.rrule, timezone, new Date(), new Date());
+        firstDueAt = dueAt ?? nextOccurrence(action.rrule, timezone, new Date(), new Date());
         if (!firstDueAt) {
           throw new ResolutionError(`the recurrence "${action.rrule}" has no upcoming occurrence`);
         }
@@ -320,36 +363,102 @@ async function executeOne(
           creatorMemberId: ctx.actor.memberId,
           conversationId: ctx.conversation?.id,
           title: action.title,
-          listId,
+          eventId,
           assigneeMemberId,
           firstDueAt,
           rrule: action.rrule,
           timezone,
-          nagIntervalMin: action.nag_interval_minutes,
         });
-        return {
-          text: `✓ Recurring task added${assigneeName}: ${action.title} — first one due ${formatLocal(firstDueAt, timezone)}, I'll nag until each one is done`,
-          result: { taskId: task.id, seriesId: series.id },
-          status: "executed",
-        };
+        if (eventId) await services.tasks.update(task.id, { eventId });
+        taskId = task.id;
+        seriesId = series.id;
+      } else {
+        const task = await services.tasks.create({
+          householdId: ctx.householdId,
+          creatorMemberId: ctx.actor.memberId,
+          conversationId: ctx.conversation?.id,
+          title: action.title,
+          eventId,
+          assigneeMemberId,
+          dueAt,
+          timezone,
+        });
+        taskId = task.id;
       }
-      const task = await services.tasks.create({
-        householdId: ctx.householdId,
-        creatorMemberId: ctx.actor.memberId,
-        conversationId: ctx.conversation?.id,
-        title: action.title,
-        listId,
-        assigneeMemberId,
-        dueAt,
-        timezone,
-        nagIntervalMin: action.nag_interval_minutes,
-      });
-      const dueText = dueAt
-        ? ` — due ${formatLocal(dueAt, timezone)}, I'll nag until it's done`
-        : "";
+
+      let listId: string | null = null;
+      let itemCount = 0;
+      if (action.checklist) {
+        const list = await services.lists.create(
+          ctx.householdId,
+          action.checklist.title,
+          ctx.actor.memberId,
+          taskId
+        );
+        const items = action.checklist.items.length
+          ? await services.lists.addItems(ctx.householdId, list.id, action.checklist.items)
+          : [];
+        listId = list.id;
+        itemCount = items.length;
+      } else if (action.list_ref) {
+        const resolved = await resolveList(ctx, action.list_ref);
+        if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+        await services.lists.update(ctx.householdId, resolved.list.id, { taskId });
+        listId = resolved.list.id;
+      }
+
+      const reminderIds: string[] = [];
+      const targeting = resolveReminderTarget(ctx, "sender", null);
+      if (!("clarify" in targeting) && action.reminders?.length) {
+        for (const spec of action.reminders) {
+          const fireAt = spec.fire_at
+            ? resolveLocalDateTime(spec.fire_at, timezone)
+            : firstDueAt ?? dueAt;
+          if (!fireAt) continue;
+          const reminder = await services.reminders.create({
+            householdId: ctx.householdId,
+            creatorMemberId: ctx.actor.memberId,
+            title: action.title,
+            taskId,
+            targetType: targeting.targetType,
+            targetMemberId: targeting.targetMemberId,
+            targetConversationId: targeting.targetConversationId,
+            fireAt,
+            rrule: spec.rrule,
+            timezone,
+            untilCompleted: Boolean(spec.rrule),
+          });
+          reminderIds.push(reminder.id);
+        }
+      }
+
+      const parts: string[] = [];
+      if (action.checklist && itemCount) {
+        parts.push(`with the ${itemCount}-item “${action.checklist.title}” checklist`);
+      } else if (action.checklist) {
+        parts.push(`with checklist “${action.checklist.title}”`);
+      } else if (action.list_ref && listId) {
+        parts.push(`linked to the “${action.list_ref}” list`);
+      }
+      if (reminderIds.length === 1 && action.reminders?.[0]?.rrule) {
+        parts.push("I'll remind you on that schedule until it's done");
+      } else if (reminderIds.length === 1 && action.reminders?.[0]?.fire_at) {
+        parts.push(
+          `I'll remind you at ${formatLocal(resolveLocalDateTime(action.reminders[0].fire_at, timezone), timezone)}`
+        );
+      } else if (reminderIds.length > 0) {
+        parts.push("I'll remind you as scheduled");
+      }
+      const dueText =
+        firstDueAt && action.rrule
+          ? ` — first one due ${formatLocal(firstDueAt, timezone)}`
+          : dueAt
+            ? ` — due ${formatLocal(dueAt, timezone)}`
+            : "";
+      const extra = parts.length ? ` ${parts.join(". ")}.` : "";
       return {
-        text: `✓ Task added${assigneeName}: ${action.title}${dueText}`,
-        result: { taskId: task.id },
+        text: `✓ Added “${action.title}”${assigneeName}${dueText}.${extra}`,
+        result: { taskId, seriesId, listId, reminderIds },
         status: "executed",
       };
     }
@@ -393,44 +502,103 @@ async function executeOne(
       if (action.new_due_at) {
         const at = resolveLocalDateTime(action.new_due_at, timezone);
         patch.dueAt = at;
-        patch.nextNudgeAt = at;
         if (target.seriesId) notes.push("just this occurrence — the rest keep their schedule");
-      }
-      if (action.new_nag_interval_minutes) {
-        patch.nagIntervalMin = action.new_nag_interval_minutes;
-        // Predictable reset: an overdue task starts its new cadence now;
-        // a future task still starts nagging at its due time.
-        if (target.status === "open" && target.dueAt) {
-          patch.nextNudgeAt =
-            target.dueAt.getTime() <= Date.now()
-              ? new Date(Date.now() + action.new_nag_interval_minutes * 60_000)
-              : target.dueAt;
-        }
-        if (target.seriesId) {
-          await services.taskSeries.update(ctx.householdId, target.seriesId, {
-            nagIntervalMin: action.new_nag_interval_minutes,
-          });
-        }
-        notes.push(`I'll nudge every ${action.new_nag_interval_minutes} min until it's done`);
-      }
-      if (action.new_list_name) {
-        const matches = await services.lists.findByRef(ctx.householdId, action.new_list_name);
-        if (matches.length > 1) {
-          return {
-            text: `Which list? ${matches.map((list) => `"${list.name}"`).join(", ")}`,
-            result: null,
-            status: "clarify",
-          };
-        }
-        const list =
-          matches[0] ??
-          (await services.lists.create(ctx.householdId, action.new_list_name, ctx.actor.memberId));
-        patch.listId = list.id;
       }
       const updated =
         Object.keys(patch).length > 0 ? await services.tasks.update(target.id, patch) : target;
       const noteText = notes.length > 0 ? ` (${notes.join("; ")})` : "";
       return { text: `✓ Updated task "${updated.title}"${noteText}`, result: { taskId: updated.id }, status: "executed" };
+    }
+
+    case "link_task_to_event": {
+      const taskResolved = await resolveOne(
+        await services.tasks.findByRef(ctx.householdId, action.task_ref),
+        "task",
+        action.task_ref
+      );
+      if ("clarify" in taskResolved) return { text: taskResolved.clarify, result: null, status: "clarify" };
+      const eventResolved = await resolveOne(
+        await services.events.findByRef(ctx.householdId, action.event_ref),
+        "event",
+        action.event_ref
+      );
+      if ("clarify" in eventResolved) return { text: eventResolved.clarify, result: null, status: "clarify" };
+      await services.tasks.update(taskResolved.id, { eventId: eventResolved.id });
+      return {
+        text: `✓ Linked “${taskResolved.title}” to “${eventResolved.title}”.`,
+        result: { taskId: taskResolved.id, eventId: eventResolved.id },
+        status: "executed",
+      };
+    }
+
+    case "link_list_to_task": {
+      const resolved = await resolveList(ctx, action.list_name);
+      if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+      const taskResolved = await resolveOne(
+        await services.tasks.findByRef(ctx.householdId, action.task_ref),
+        "task",
+        action.task_ref
+      );
+      if ("clarify" in taskResolved) return { text: taskResolved.clarify, result: null, status: "clarify" };
+      await services.lists.update(ctx.householdId, resolved.list.id, { taskId: taskResolved.id });
+      return {
+        text: `✓ Linked list “${resolved.list.name}” to task “${taskResolved.title}”.`,
+        result: { listId: resolved.list.id, taskId: taskResolved.id },
+        status: "executed",
+      };
+    }
+
+    case "link_list_to_event": {
+      const resolved = await resolveList(ctx, action.list_name);
+      if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+      const eventResolved = await resolveOne(
+        await services.events.findByRef(ctx.householdId, action.event_ref),
+        "event",
+        action.event_ref
+      );
+      if ("clarify" in eventResolved) return { text: eventResolved.clarify, result: null, status: "clarify" };
+      await services.lists.update(ctx.householdId, resolved.list.id, { eventId: eventResolved.id });
+      return {
+        text: `✓ Linked list “${resolved.list.name}” to event “${eventResolved.title}”.`,
+        result: { listId: resolved.list.id, eventId: eventResolved.id },
+        status: "executed",
+      };
+    }
+
+    case "link_reminder_to_task": {
+      const matches = await services.reminders.findByRef(ctx.householdId, action.reminder_ref);
+      const reminderResolved = resolveOne(matches, "reminder", action.reminder_ref);
+      if ("clarify" in reminderResolved) return { text: reminderResolved.clarify, result: null, status: "clarify" };
+      const taskResolved = await resolveOne(
+        await services.tasks.findByRef(ctx.householdId, action.task_ref),
+        "task",
+        action.task_ref
+      );
+      if ("clarify" in taskResolved) return { text: taskResolved.clarify, result: null, status: "clarify" };
+      await services.reminders.update(reminderResolved.id, { taskId: taskResolved.id });
+      return {
+        text: `✓ Linked reminder “${reminderResolved.title}” to task “${taskResolved.title}”.`,
+        result: { reminderId: reminderResolved.id, taskId: taskResolved.id },
+        status: "executed",
+      };
+    }
+
+    case "link_reminder_to_event": {
+      const matches = await services.reminders.findByRef(ctx.householdId, action.reminder_ref);
+      const reminderResolved = resolveOne(matches, "reminder", action.reminder_ref);
+      if ("clarify" in reminderResolved) return { text: reminderResolved.clarify, result: null, status: "clarify" };
+      const eventResolved = await resolveOne(
+        await services.events.findByRef(ctx.householdId, action.event_ref),
+        "event",
+        action.event_ref
+      );
+      if ("clarify" in eventResolved) return { text: eventResolved.clarify, result: null, status: "clarify" };
+      await services.reminders.update(reminderResolved.id, { eventId: eventResolved.id });
+      return {
+        text: `✓ Linked reminder “${reminderResolved.title}” to event “${eventResolved.title}”.`,
+        result: { reminderId: reminderResolved.id, eventId: eventResolved.id },
+        status: "executed",
+      };
     }
 
     case "complete_task": {
@@ -486,14 +654,51 @@ async function executeOne(
     }
 
     case "create_list": {
-      const list = await services.lists.create(ctx.householdId, action.name, ctx.actor.memberId);
+      let taskId: string | null = null;
+      let eventId: string | null = null;
+      if (action.task_ref) {
+        const resolved = await resolveOne(
+          await services.tasks.findByRef(ctx.householdId, action.task_ref),
+          "task",
+          action.task_ref
+        );
+        if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+        taskId = resolved.id;
+      }
+      if (action.event_ref) {
+        const resolved = await resolveOne(
+          await services.events.findByRef(ctx.householdId, action.event_ref),
+          "event",
+          action.event_ref
+        );
+        if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+        eventId = resolved.id;
+      }
+      const list = await services.lists.create(
+        ctx.householdId,
+        action.name,
+        ctx.actor.memberId,
+        taskId,
+        eventId
+      );
+      if (taskId || eventId) {
+        await services.lists.update(ctx.householdId, list.id, {
+          ...(taskId ? { taskId } : {}),
+          ...(eventId ? { eventId } : {}),
+        });
+      }
       const items = action.items?.length
-        ? await services.lists.addItems(ctx.householdId, list.id, action.items, ctx.actor.memberId)
+        ? await services.lists.addItems(ctx.householdId, list.id, action.items)
         : [];
       const itemText = items.length ? ` Added ${items.length} item${items.length === 1 ? "" : "s"}.` : "";
+      const links = [
+        taskId && action.task_ref ? `task “${action.task_ref}”` : null,
+        eventId && action.event_ref ? `event “${action.event_ref}”` : null,
+      ].filter(Boolean);
+      const linkText = links.length ? ` Linked to ${links.join(" and ")}.` : "";
       return {
-        text: `✓ List "${list.name}" is ready.${itemText}`,
-        result: { listId: list.id, itemIds: items.map((item) => item.id) },
+        text: `✓ List "${list.name}" is ready.${itemText}${linkText}`,
+        result: { listId: list.id, itemIds: items.map((item) => item.id), taskId, eventId },
         status: "executed",
       };
     }
@@ -512,7 +717,7 @@ async function executeOne(
       const list = resolved.list;
       await services.lists.remove(ctx.householdId, list.id);
       return {
-        text: `✓ Deleted list "${list.name}" (its tasks moved to General).`,
+        text: `✓ Deleted list "${list.name}".`,
         result: { listId: list.id },
         status: "executed",
       };
@@ -522,14 +727,9 @@ async function executeOne(
       const resolved = await resolveList(ctx, action.list_name);
       if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
       const list = resolved.list;
-      const items = await services.lists.addItems(
-        ctx.householdId,
-        list.id,
-        action.items,
-        ctx.actor.memberId
-      );
+      const items = await services.lists.addItems(ctx.householdId, list.id, action.items);
       return {
-        text: `✓ Added ${items.map((item) => `"${item.title}"`).join(", ")} to "${list.name}".`,
+        text: `✓ Added ${items.map((item) => `"${item.body}"`).join(", ")} to "${list.name}".`,
         result: { listId: list.id, itemIds: items.map((item) => item.id) },
         status: "executed",
       };
@@ -538,10 +738,12 @@ async function executeOne(
     case "update_list_item": {
       const resolved = await resolveListItem(ctx, action.list_name, action.item_ref);
       if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
-      const updated = await services.tasks.update(resolved.item.id, { title: action.new_title });
+      const updated = await services.lists.updateItem(ctx.householdId, resolved.item.id, {
+        body: action.new_title,
+      });
       return {
-        text: `✓ Changed "${resolved.item.title}" to "${updated.title}" on "${resolved.list.name}".`,
-        result: { listId: resolved.list.id, itemId: updated.id },
+        text: `✓ Changed "${resolved.item.body}" to "${updated!.body}" on "${resolved.list.name}".`,
+        result: { listId: resolved.list.id, itemId: updated!.id },
         status: "executed",
       };
     }
@@ -549,16 +751,12 @@ async function executeOne(
     case "set_list_item_completed": {
       const resolved = await resolveListItem(ctx, action.list_name, action.item_ref);
       if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
-      const item = action.completed
-        ? ((await services.tasks.complete(resolved.item.id)) ?? resolved.item)
-        : await services.tasks.update(resolved.item.id, {
-            status: "open",
-            completedAt: null,
-            nextNudgeAt: null,
-          });
+      const item = await services.lists.updateItem(ctx.householdId, resolved.item.id, {
+        completedAt: action.completed ? new Date() : null,
+      });
       return {
-        text: `✓ Marked "${item.title}" ${action.completed ? "done" : "not done"} on "${resolved.list.name}".`,
-        result: { listId: resolved.list.id, itemId: item.id, completed: action.completed },
+        text: `✓ Marked "${item!.body}" ${action.completed ? "done" : "not done"} on "${resolved.list.name}".`,
+        result: { listId: resolved.list.id, itemId: item!.id, completed: action.completed },
         status: "executed",
       };
     }
@@ -566,9 +764,9 @@ async function executeOne(
     case "delete_list_item": {
       const resolved = await resolveListItem(ctx, action.list_name, action.item_ref);
       if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
-      await services.tasks.cancel(resolved.item.id);
+      await services.lists.removeItem(ctx.householdId, resolved.item.id);
       return {
-        text: `✓ Removed "${resolved.item.title}" from "${resolved.list.name}".`,
+        text: `✓ Removed "${resolved.item.body}" from "${resolved.list.name}".`,
         result: { listId: resolved.list.id, itemId: resolved.item.id },
         status: "executed",
       };
@@ -582,7 +780,7 @@ async function executeOne(
       const text =
         items.length === 0
           ? `"${list.name}" is empty.`
-          : [`"${list.name}":`, ...items.map((item) => `${item.status === "done" ? "✓" : "○"} ${item.title}`)].join(
+          : [`"${list.name}":`, ...items.map((item) => `${item.completedAt ? "✓" : "○"} ${item.body}`)].join(
               "\n"
             );
       return {
@@ -595,6 +793,14 @@ async function executeOne(
     case "create_event": {
       const startsAt = resolveLocalDateTime(action.start_at, timezone);
       const endsAt = action.end_at ? resolveLocalDateTime(action.end_at, timezone) : null;
+      let listId: string | null = null;
+      let listName: string | null = null;
+      if (action.list_ref) {
+        const resolved = await resolveList(ctx, action.list_ref);
+        if ("clarify" in resolved) return { text: resolved.clarify, result: null, status: "clarify" };
+        listId = resolved.list.id;
+        listName = resolved.list.name;
+      }
       const { event, external } = await createEventEntry({
         services,
         externalCalendar: ctx.externalCalendar ?? null,
@@ -604,21 +810,50 @@ async function executeOne(
         startsAt,
         endsAt,
         location: action.location,
-        notes: null,
+        notes: action.notes,
         rrule: action.rrule,
         timezone,
       });
+      if (listId) {
+        await services.lists.update(ctx.householdId, listId, { eventId: event.id });
+      }
+      const reminderIds: string[] = [];
+      const targeting = resolveReminderTarget(ctx, "sender", null);
+      if (!("clarify" in targeting) && action.reminders?.length) {
+        for (const spec of action.reminders) {
+          const fireAt = spec.fire_at ? resolveLocalDateTime(spec.fire_at, timezone) : startsAt;
+          if (!fireAt) continue;
+          const reminder = await services.reminders.create({
+            householdId: ctx.householdId,
+            creatorMemberId: ctx.actor.memberId,
+            title: action.title,
+            eventId: event.id,
+            targetType: targeting.targetType,
+            targetMemberId: targeting.targetMemberId,
+            targetConversationId: targeting.targetConversationId,
+            fireAt,
+            rrule: spec.rrule,
+            timezone,
+          });
+          reminderIds.push(reminder.id);
+        }
+      }
+      const extras = [
+        listName ? `linked to the “${listName}” list` : null,
+        reminderIds.length ? "I'll remind you as scheduled" : null,
+      ].filter(Boolean);
+      const extra = extras.length ? `. ${extras.join(". ")}.` : "";
       const recurringText = action.rrule ? " (recurring)" : "";
       if (external) {
         return {
-          text: `✓ Added to Google Calendar: ${action.title} — ${formatLocal(startsAt, timezone)}${recurringText}`,
-          result: { eventId: event.id, externalId: external.externalId },
+          text: `✓ Added to Google Calendar: ${action.title} — ${formatLocal(startsAt, timezone)}${recurringText}${extra}`,
+          result: { eventId: event.id, externalId: external.externalId, listId, reminderIds },
           status: "executed",
         };
       }
       return {
-        text: `✓ Added to the calendar: ${action.title} — ${formatLocal(startsAt, timezone)}${recurringText}`,
-        result: { eventId: event.id },
+        text: `✓ Added to the calendar: ${action.title} — ${formatLocal(startsAt, timezone)}${recurringText}${extra}`,
+        result: { eventId: event.id, listId, reminderIds },
         status: "executed",
       };
     }
@@ -740,10 +975,53 @@ async function resolveListItem(
   }
   if (matches.length > 1) {
     return {
-      clarify: `Which item on "${list.name}"? ${matches.map((item) => `"${item.title}"`).join(", ")}`,
+      clarify: `Which item on "${list.name}"? ${matches.map((item) => `"${item.body}"`).join(", ")}`,
     };
   }
   return { list, item: matches[0]! };
+}
+
+function resolveReminderTarget(
+  ctx: ExecutionContext,
+  target: "sender" | "conversation" | "named_person",
+  targetName: string | null
+):
+  | {
+      targetType: "member" | "conversation";
+      targetMemberId?: string;
+      targetConversationId?: string;
+      who: string;
+    }
+  | { clarify: string } {
+  let targetType: "member" | "conversation" = "member";
+  let targetMemberId: string | undefined = ctx.actor.memberId;
+  let targetConversationId: string | undefined = ctx.conversation?.id;
+  let who = "you";
+  if (target === "conversation") {
+    if (!ctx.conversation) throw new ResolutionError("no conversation to remind");
+    targetType = "conversation";
+    targetMemberId = undefined;
+    targetConversationId = ctx.conversation.id;
+    who = "everyone here";
+  } else if (target === "named_person") {
+    const person = resolvePersonName(targetName ?? "", ctx.participants, ctx.householdMembers);
+    if (!person) return { clarify: `I don't know who "${targetName}" is — who do you mean?` };
+    targetMemberId = person.id;
+    who = person.displayName;
+  }
+  return { targetType, targetMemberId, targetConversationId, who };
+}
+
+function resolveOne<T extends { id: string; title: string }>(
+  matches: T[],
+  kind: string,
+  ref: string
+): { id: string; title: string } | { clarify: string } {
+  if (matches.length === 0) return { clarify: `I couldn't find a ${kind} like "${ref}".` };
+  if (matches.length > 1) {
+    return { clarify: `Which ${kind}? ${matches.map((m) => `"${m.title}"`).join(", ")}` };
+  }
+  return { id: matches[0]!.id, title: matches[0]!.title };
 }
 
 /**
@@ -766,7 +1044,7 @@ async function resolveCommentSubject(
     subjectType === "task"
       ? await services.tasks.findByRef(householdId, ref)
       : await services.events.findByRef(householdId, ref);
-  const label = subjectType === "task" ? "todo" : "event";
+  const label = subjectType === "task" ? "task" : "event";
   if (matches.length === 0) return { clarify: `I couldn't find a ${label} like "${ref}".` };
   if (matches.length > 1) {
     return { clarify: `Which ${label}? ${matches.map((m) => `"${m.title}"`).join(", ")}` };

@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import type { Db } from "@fambot/database";
-import { reminders, taskSeries } from "@fambot/database";
+import { reminders, taskSeries, tasks } from "@fambot/database";
 import { materializeOccurrence, nextOccurrence } from "@fambot/domain";
 import type { DispatchOutcome, NotificationRequest } from "@fambot/messaging";
 
@@ -23,8 +23,7 @@ export type ScheduledNotifier = {
 export async function runWorkerOnce(db: Db, notifier: ScheduledNotifier) {
   const spawned = await spawnDueTaskOccurrences(db);
   const fired = await fireDueReminders(db, notifier);
-  const nudged = await nudgeDueTasks(db, notifier);
-  return { fired, nudged, spawned };
+  return { fired, spawned };
 }
 
 // --- recurring task series -----------------------------------------------------
@@ -52,11 +51,11 @@ async function spawnDueTaskOccurrences(db: Db): Promise<number> {
       FOR UPDATE SKIP LOCKED
     ) AS due
     WHERE task_series.id = due.id
-    RETURNING task_series.id, task_series.household_id, task_series.list_id,
+    RETURNING task_series.id, task_series.household_id,
               task_series.title, task_series.notes, task_series.assignee_member_id,
               task_series.creator_member_id, task_series.conversation_id,
               task_series.rrule, task_series.timezone, task_series.anchor_at,
-              task_series.nag_interval_min, due.next_occurrence_at AS due_at
+              due.next_occurrence_at AS due_at
   `);
 
   let count = 0;
@@ -73,10 +72,8 @@ async function spawnDueTaskOccurrences(db: Db): Promise<number> {
       conversationId: row.conversation_id as string | null,
       title: row.title as string,
       notes: row.notes as string | null,
-      listId: row.list_id as string | null,
       assigneeMemberId: row.assignee_member_id as string | null,
       timezone: tz,
-      nagIntervalMin: row.nag_interval_min as number,
     };
 
     let at: Date | null = new Date(row.due_at as string);
@@ -120,6 +117,7 @@ async function fireDueReminders(db: Db, notifier: ScheduledNotifier): Promise<nu
     WHERE r.id = due.id
     RETURNING r.id, r.household_id, r.title, r.target_type, r.target_member_id,
               r.target_conversation_id, r.fire_at, r.rrule, r.timezone,
+              r.task_id, r.event_id, r.until_completed,
               due.occurrence_at
   `);
 
@@ -129,23 +127,39 @@ async function fireDueReminders(db: Db, notifier: ScheduledNotifier): Promise<nu
     const title = row.title as string;
     const tz = row.timezone as string;
     const rrule = row.rrule as string | null;
+    const taskId = (row.task_id as string | null) ?? null;
+    const untilCompleted = Boolean(row.until_completed);
     const occurrenceAt = new Date(row.occurrence_at as string);
     const fireAt = row.fire_at ? new Date(row.fire_at as string) : occurrenceAt;
 
-    // Durable fan-out: the dispatcher records a delivery row per recipient and
-    // channel before any provider call. If dispatch itself throws (DB down),
-    // the lease expiry retries this occurrence; provider-level failures live
-    // in the delivery audit and are NOT re-fired.
+    if (untilCompleted && taskId) {
+      const [parent] = await db
+        .select({ status: tasks.status, conversationId: tasks.conversationId })
+        .from(tasks)
+        .where(eq(tasks.id, taskId));
+      if (!parent || parent.status !== "open") {
+        await db
+          .update(reminders)
+          .set({ status: "cancelled", nextFireAt: null, updatedAt: new Date() })
+          .where(eq(reminders.id, id));
+        continue;
+      }
+    }
+
+    const aboutTask = Boolean(taskId);
     await notifier.dispatch({
       householdId: row.household_id as string,
       kind: "reminder",
       sourceId: id,
+      taskId,
       occurrenceKey: occurrenceAt.toISOString(),
       target: {
         memberId: (row.target_member_id as string | null) ?? null,
         conversationId: (row.target_conversation_id as string | null) ?? null,
       },
-      text: `⏰ Reminder: ${title}`,
+      text: aboutTask
+        ? `⏰ Still open: ${title} — reply "done" when it's finished.`
+        : `⏰ Reminder: ${title}`,
     });
 
     // Advance the schedule only after the occurrence was durably fanned out.
@@ -154,54 +168,17 @@ async function fireDueReminders(db: Db, notifier: ScheduledNotifier): Promise<nu
       if (next) {
         await db.update(reminders).set({ nextFireAt: next, updatedAt: new Date() }).where(eq(reminders.id, id));
       } else {
-        await db.update(reminders).set({ status: "done", nextFireAt: null, updatedAt: new Date() }).where(eq(reminders.id, id));
+        await db
+          .update(reminders)
+          .set({ status: "done", nextFireAt: null, updatedAt: new Date() })
+          .where(eq(reminders.id, id));
       }
     } else {
-      await db.update(reminders).set({ status: "done", nextFireAt: null, updatedAt: new Date() }).where(eq(reminders.id, id));
+      await db
+        .update(reminders)
+        .set({ status: "done", nextFireAt: null, updatedAt: new Date() })
+        .where(eq(reminders.id, id));
     }
-    count++;
-  }
-  return count;
-}
-
-// --- task nudges ---------------------------------------------------------------
-
-async function nudgeDueTasks(db: Db, notifier: ScheduledNotifier): Promise<number> {
-  const claimed = await db.execute(sql`
-    UPDATE tasks t SET next_nudge_at = now() + (t.nag_interval_min * interval '1 minute')
-    FROM (
-      SELECT id, next_nudge_at AS occurrence_at FROM tasks
-      WHERE status = 'open' AND next_nudge_at IS NOT NULL AND next_nudge_at <= now()
-      ORDER BY next_nudge_at
-      LIMIT 10
-      FOR UPDATE SKIP LOCKED
-    ) AS due
-    WHERE t.id = due.id
-    RETURNING t.id, t.household_id, t.title, t.assignee_member_id,
-              t.creator_member_id, t.conversation_id, due.occurrence_at
-  `);
-
-  let count = 0;
-  for (const row of claimed.rows as Array<Record<string, unknown>>) {
-    const id = row.id as string;
-    const title = row.title as string;
-    const occurrenceAt = new Date(row.occurrence_at as string);
-    const targetMemberId =
-      (row.assignee_member_id as string | null) ?? (row.creator_member_id as string | null);
-
-    // The dispatcher stores the member's SMS conversation on the delivery row,
-    // so a bare SMS "done" resolves via tasks.lastNudged on that conversation.
-    await notifier.dispatch({
-      householdId: row.household_id as string,
-      kind: "task_nudge",
-      sourceId: id,
-      occurrenceKey: occurrenceAt.toISOString(),
-      target: {
-        memberId: targetMemberId,
-        conversationId: (row.conversation_id as string | null) ?? null,
-      },
-      text: `⏰ Still open: ${title} — reply "done" when it's finished.`,
-    });
     count++;
   }
   return count;

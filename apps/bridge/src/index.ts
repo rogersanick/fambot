@@ -1,4 +1,4 @@
-import { loadConfig } from "./config";
+import { prepareRuntime } from "./cli";
 import { ImsgRpc } from "./imsg-rpc";
 import { BridgeState } from "./state";
 import { InboundRelay, OutboundConsumer } from "./relay";
@@ -8,9 +8,18 @@ import { InboundRelay, OutboundConsumer } from "./relay";
  * Mac. Inbound messages are forwarded to the cloud API; outbound sends arrive
  * over a WebSocket and go out through the imsg CLI. No inference, no
  * database, no business logic.
+ *
+ * `bun dev` starts this with BRIDGE_TOKEN from env. `bun bridge:local` /
+ * `bun bridge:prod` prompt for a household-owner login and point at that API.
  */
 
-const config = loadConfig();
+const config = await prepareRuntime(process.argv.slice(2))
+  .then((runtime) => runtime.config)
+  .catch((err) => {
+    console.error(`[bridge] ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  });
+if (!config) process.exit(1);
 const state = new BridgeState(config.STATE_PATH);
 const relay = new InboundRelay(config, state);
 
@@ -23,7 +32,7 @@ const rpc = new ImsgRpc({
 
 const outbound = new OutboundConsumer(config, state, (args) => rpc.send(args));
 
-console.log(`[bridge] starting (profile=${config.FAMBOT_PROFILE}, api=${config.API_URL})`);
+console.log(`[bridge] starting (api=${config.API_URL})`);
 
 await rpc.start();
 outbound.start();

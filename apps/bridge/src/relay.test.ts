@@ -10,7 +10,6 @@ const config: BridgeConfig = {
   IMSG_BIN: "imsg",
   BOT_MESSAGE_PREFIX: "Fambot says: 🤖✨",
   STATE_PATH: `/tmp/fambot-relay-test-${Date.now()}.json`,
-  FAMBOT_PROFILE: "production",
 };
 
 function msg(overrides: Partial<ImsgMessage>): ImsgMessage {
@@ -58,25 +57,17 @@ describe("InboundRelay", () => {
     });
   });
 
-  test("production profile drops all is_from_me messages", async () => {
-    const { calls, fetchFn } = capture();
-    const relay = new InboundRelay(config, new BridgeState(config.STATE_PATH), fetchFn);
-    relay.handle(msg({ is_from_me: true, text: "my own message" }));
-    await flush();
-    expect(calls).toHaveLength(0);
-  });
-
-  test("local-dev forwards un-prefixed self messages but drops bot echoes", async () => {
+  test("forwards self messages but drops bot echoes", async () => {
     const { calls, fetchFn } = capture();
     const state = new BridgeState(config.STATE_PATH);
-    const relay = new InboundRelay({ ...config, FAMBOT_PROFILE: "local-dev" }, state, fetchFn);
+    const relay = new InboundRelay(config, state, fetchFn);
     relay.handle(msg({ is_from_me: true, guid: "self1", text: "remind me to stretch" }));
     relay.handle(msg({ is_from_me: true, guid: "echo1", text: "Fambot says: 🤖✨\nDone!" }));
     state.recordSent("ledger1");
     relay.handle(msg({ is_from_me: true, guid: "ledger1", text: "un-prefixed but in sent ledger" }));
     await flush();
     expect(calls).toHaveLength(1);
-    expect((calls[0]!.body as { guid: string }).guid).toBe("self1");
+    expect(calls[0]!.body).toMatchObject({ guid: "self1", senderHandle: "+15551234567" });
   });
 
   test("skips empty texts and DMs are not groups", async () => {

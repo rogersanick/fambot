@@ -70,11 +70,10 @@ export type Task = {
   id: string;
   title: string;
   status: "open" | "done" | "cancelled";
-  listId: string | null;
+  eventId: string | null;
   assigneeMemberId: string | null;
   dueAt: string | null;
   rrule: string | null;
-  nagIntervalMin: number;
   seriesId: string | null;
   scheduledFor: string | null;
   completedAt: string | null;
@@ -85,13 +84,24 @@ export type TaskSeries = {
   title: string;
   rrule: string;
   timezone: string;
-  nagIntervalMin: number;
   status: "active" | "exhausted" | "cancelled";
   nextOccurrenceAt: string | null;
-  listId: string | null;
   assigneeMemberId: string | null;
 };
-export type List = { id: string; name: string };
+export type ChecklistItem = {
+  id: string;
+  listId: string;
+  body: string;
+  completedAt: string | null;
+  sortOrder: number;
+};
+export type List = {
+  id: string;
+  name: string;
+  taskId: string | null;
+  eventId: string | null;
+  items?: ChecklistItem[];
+};
 export type Reminder = {
   id: string;
   title: string;
@@ -99,6 +109,9 @@ export type Reminder = {
   fireAt: string | null;
   nextFireAt: string | null;
   rrule: string | null;
+  taskId: string | null;
+  eventId: string | null;
+  untilCompleted: boolean;
   createdAt: string;
 };
 export type EventItem = {
@@ -107,6 +120,7 @@ export type EventItem = {
   startsAt: string;
   endsAt: string | null;
   location: string | null;
+  notes: string | null;
   rrule: string | null;
   source: "internal" | "google";
 };
@@ -124,6 +138,17 @@ export type ChatMessage = {
   text: string;
   sentAt: string;
   senderMemberId: string | null;
+};
+export type ArtifactPreview = {
+  type: "task" | "reminder" | "list" | "event";
+  id: string;
+  title: string;
+  label: string;
+  ogTitle: string;
+  description: string;
+  status: string | null;
+  when: string | null;
+  timezone: string | null;
 };
 export type BridgeStatus = { connected: boolean; lastSeen: string | null };
 export type SmsStatus = {
@@ -235,10 +260,38 @@ export const api = {
       }),
   },
 
+  artifacts: {
+    preview: (type: ArtifactPreview["type"], id: string) =>
+      req<{ artifact: ArtifactPreview }>(`/public/artifacts/${type}/${id}`),
+    chat: {
+      get: (hid: string, type: ArtifactPreview["type"], id: string) =>
+        req<{ conversationId: string; messages: ChatMessage[] }>(`/households/${hid}/items/${type}/${id}/chat`),
+      send: (hid: string, type: ArtifactPreview["type"], id: string, text: string) =>
+        req<{ conversationId: string; reply: string | null }>(`/households/${hid}/items/${type}/${id}/chat`, {
+          method: "POST",
+          body: JSON.stringify({ text }),
+        }),
+    },
+  },
+
   reminders: {
     list: (hid: string) => req<{ reminders: Reminder[] }>(`/households/${hid}/reminders`),
-    create: (hid: string, body: { title: string; fireAt: string | null; rrule?: string | null }) =>
-      req<{ reminder: Reminder }>(`/households/${hid}/reminders`, { method: "POST", body: JSON.stringify(body) }),
+    create: (
+      hid: string,
+      body: {
+        title: string;
+        fireAt: string | null;
+        rrule?: string | null;
+        taskId?: string | null;
+        eventId?: string | null;
+        untilCompleted?: boolean;
+      }
+    ) => req<{ reminder: Reminder }>(`/households/${hid}/reminders`, { method: "POST", body: JSON.stringify(body) }),
+    patch: (
+      hid: string,
+      rid: string,
+      body: { taskId?: string | null; eventId?: string | null }
+    ) => req<{ reminder: Reminder }>(`/households/${hid}/reminders/${rid}`, { method: "PATCH", body: JSON.stringify(body) }),
     cancel: (hid: string, rid: string) =>
       req<{ ok: true }>(`/households/${hid}/reminders/${rid}`, { method: "DELETE" }),
   },
@@ -250,10 +303,12 @@ export const api = {
       body: {
         title: string;
         dueAt?: string | null;
-        listId?: string | null;
+        eventId?: string | null;
         assigneeMemberId?: string | null;
         rrule?: string | null;
-        nagIntervalMin?: number;
+        checklist?: { title: string; items: string[] };
+        listId?: string | null;
+        reminder?: { fireAt: string; rrule?: string | null; untilCompleted?: boolean };
       }
     ) => req<{ task: Task }>(`/households/${hid}/tasks`, { method: "POST", body: JSON.stringify(body) }),
     patch: (
@@ -263,8 +318,7 @@ export const api = {
         status?: "open" | "done" | "cancelled";
         title?: string;
         dueAt?: string | null;
-        listId?: string | null;
-        nagIntervalMin?: number;
+        eventId?: string | null;
       }
     ) => req<unknown>(`/households/${hid}/tasks/${tid}`, { method: "PATCH", body: JSON.stringify(body) }),
   },
@@ -273,18 +327,35 @@ export const api = {
     patch: (
       hid: string,
       sid: string,
-      body: { title?: string; rrule?: string; nagIntervalMin?: number }
+      body: { title?: string; rrule?: string }
     ) => req<{ series: TaskSeries }>(`/households/${hid}/task-series/${sid}`, { method: "PATCH", body: JSON.stringify(body) }),
     cancel: (hid: string, sid: string) =>
       req<{ ok: true }>(`/households/${hid}/task-series/${sid}`, { method: "DELETE" }),
   },
 
   lists: {
-    create: (hid: string, name: string) =>
-      req<{ list: List }>(`/households/${hid}/lists`, { method: "POST", body: JSON.stringify({ name }) }),
+    create: (hid: string, name: string, links?: { taskId?: string | null; eventId?: string | null }) =>
+      req<{ list: List }>(`/households/${hid}/lists`, { method: "POST", body: JSON.stringify({ name, ...links }) }),
     rename: (hid: string, lid: string, name: string) =>
       req<{ list: List }>(`/households/${hid}/lists/${lid}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+    patch: (
+      hid: string,
+      lid: string,
+      body: { name?: string; taskId?: string | null; eventId?: string | null }
+    ) => req<{ list: List }>(`/households/${hid}/lists/${lid}`, { method: "PATCH", body: JSON.stringify(body) }),
     remove: (hid: string, lid: string) => req<{ ok: true }>(`/households/${hid}/lists/${lid}`, { method: "DELETE" }),
+    addItems: (hid: string, lid: string, items: string[]) =>
+      req<{ items: ChecklistItem[] }>(`/households/${hid}/lists/${lid}/items`, {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      }),
+    patchItem: (hid: string, lid: string, iid: string, body: { body?: string; completed?: boolean }) =>
+      req<{ item: ChecklistItem }>(`/households/${hid}/lists/${lid}/items/${iid}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    removeItem: (hid: string, lid: string, iid: string) =>
+      req<{ ok: true }>(`/households/${hid}/lists/${lid}/items/${iid}`, { method: "DELETE" }),
   },
 
   events: {
@@ -296,7 +367,10 @@ export const api = {
         startsAt: string;
         endsAt?: string | null;
         location?: string | null;
+        notes?: string | null;
         rrule?: string | null;
+        listId?: string | null;
+        reminder?: { fireAt: string; rrule?: string | null };
       }
     ) => req<{ event: EventItem }>(`/households/${hid}/events`, { method: "POST", body: JSON.stringify(body) }),
     remove: (hid: string, eid: string) =>

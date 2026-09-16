@@ -60,7 +60,7 @@ export function ConnectionsTab({
   async function connectGoogle() {
     try {
       const { url } = await api.integrations.googleConnect();
-      window.open(url, "_blank");
+      window.location.assign(url);
     } catch {
       toast.error("Google OAuth isn't configured on the server yet.");
     }
@@ -80,7 +80,7 @@ export function ConnectionsTab({
 
       <Card className="animate-fade-up">
         <CardHeader>
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <CardTitle className="font-serif text-lg">Text messages (SMS)</CardTitle>
               <CardDescription>
@@ -93,6 +93,7 @@ export function ConnectionsTab({
               disabled={!isOwner || !smsChannel}
               onCheckedChange={(v) => void setChannel("sms", v)}
               aria-label="Enable SMS notifications"
+              className="self-start sm:self-auto"
             />
           </div>
         </CardHeader>
@@ -138,7 +139,7 @@ export function ConnectionsTab({
 
       <Card className="animate-fade-up" style={{ animationDelay: "80ms" }}>
         <CardHeader>
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <CardTitle className="font-serif text-lg">iMessage</CardTitle>
               <CardDescription>
@@ -151,6 +152,7 @@ export function ConnectionsTab({
               disabled={!isOwner || !imsgChannel}
               onCheckedChange={(v) => void setChannel("imessage", v)}
               aria-label="Enable iMessage notifications"
+              className="self-start sm:self-auto"
             />
           </div>
         </CardHeader>
@@ -206,12 +208,12 @@ export function ConnectionsTab({
             merge Google + household events.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex items-center gap-3">
+        <CardContent className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
           {google?.connected ? (
             <>
               <Badge className="bg-chart-1 text-primary-foreground">connected</Badge>
               {google.email && <span className="text-muted-foreground text-sm">{google.email}</span>}
-              <Button variant="outline" size="sm" onClick={disconnectGoogle} className="ml-auto">
+              <Button variant="outline" size="sm" onClick={disconnectGoogle} className="sm:ml-auto">
                 Disconnect
               </Button>
             </>
@@ -228,7 +230,7 @@ export function ConnectionsTab({
                 size="sm"
                 onClick={connectGoogle}
                 disabled={!google?.configured}
-                className="ml-auto"
+                className="sm:ml-auto"
               >
                 Connect
               </Button>

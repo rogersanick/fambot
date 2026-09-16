@@ -39,7 +39,7 @@ export function AcceptInviteScreen({
 
   const invite = preview.data?.invite;
   return (
-    <main className="flex min-h-svh flex-col items-center justify-center gap-6 p-6">
+    <main className="flex min-h-svh flex-col items-center justify-center gap-6 p-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
       <FambotLogo className="text-primary h-10 sm:h-12" />
       <Card className="animate-fade-up w-full max-w-sm">
         <CardHeader>
@@ -65,7 +65,7 @@ export function AcceptInviteScreen({
                 <p className="font-serif text-lg">{invite.household.name}</p>
               </div>
               {invite.state === "pending" ? (
-                <SubmitButton pending={pending} onClick={() => void accept()}>
+                <SubmitButton type="button" pending={pending} onClick={() => void accept()}>
                   Join household
                 </SubmitButton>
               ) : (

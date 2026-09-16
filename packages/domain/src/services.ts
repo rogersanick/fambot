@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, gt, gte, ilike, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, ilike, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@fambot/database";
 import {
+  checklistItems,
   comments,
   deliveries,
   events,
@@ -23,12 +24,15 @@ export type CreateReminderInput = {
   householdId: string;
   creatorMemberId: string;
   title: string;
+  taskId?: string | null;
+  eventId?: string | null;
   targetType: "member" | "conversation";
   targetMemberId?: string;
   targetConversationId?: string;
   fireAt: Date | null;
   rrule: string | null;
   timezone: string;
+  untilCompleted?: boolean;
 };
 
 export function createReminderService(db: Db) {
@@ -40,12 +44,19 @@ export function createReminderService(db: Db) {
         nextFireAt = nextOccurrence(input.rrule, input.timezone, new Date(), new Date());
       }
       if (!nextFireAt) throw new Error("reminder needs a fire time or recurrence");
+      const taskId = input.taskId ?? null;
+      const eventId = input.eventId ?? null;
+      if (taskId && eventId) {
+        throw new Error("reminder cannot attach to both a task and an event");
+      }
       const [row] = await db
         .insert(reminders)
         .values({
           householdId: input.householdId,
           creatorMemberId: input.creatorMemberId,
           title: input.title,
+          taskId,
+          eventId,
           targetType: input.targetType,
           targetMemberId: input.targetMemberId,
           targetConversationId: input.targetConversationId,
@@ -53,6 +64,7 @@ export function createReminderService(db: Db) {
           rrule: input.rrule,
           timezone: input.timezone,
           nextFireAt,
+          untilCompleted: Boolean(input.untilCompleted && taskId),
           status: "scheduled",
         })
         .returning();
@@ -75,11 +87,26 @@ export function createReminderService(db: Db) {
 
     async update(
       id: string,
-      patch: Partial<{ title: string; fireAt: Date; nextFireAt: Date; rrule: string | null }>
+      patch: Partial<{
+        title: string;
+        fireAt: Date;
+        nextFireAt: Date;
+        rrule: string | null;
+        taskId: string | null;
+        eventId: string | null;
+        untilCompleted: boolean;
+      }>
     ) {
+      if (patch.taskId && patch.eventId) {
+        throw new Error("reminder cannot attach to both a task and an event");
+      }
+      const next: typeof patch = { ...patch };
+      if (patch.taskId) next.eventId = null;
+      if (patch.eventId) next.taskId = null;
+      if (patch.taskId === null || patch.eventId) next.untilCompleted = false;
       const [row] = await db
         .update(reminders)
-        .set({ ...patch, updatedAt: new Date() })
+        .set({ ...next, updatedAt: new Date() })
         .where(eq(reminders.id, id))
         .returning();
       return row!;
@@ -90,6 +117,30 @@ export function createReminderService(db: Db) {
         .update(reminders)
         .set({ status: "cancelled", updatedAt: new Date() })
         .where(eq(reminders.id, id));
+    },
+
+    /** Cancel remaining scheduled reminders when a task is completed or cancelled. */
+    async cancelForTask(taskId: string) {
+      await db
+        .update(reminders)
+        .set({ status: "cancelled", nextFireAt: null, updatedAt: new Date() })
+        .where(and(eq(reminders.taskId, taskId), eq(reminders.status, "scheduled")));
+    },
+
+    async listForTask(householdId: string, taskId: string) {
+      return db
+        .select()
+        .from(reminders)
+        .where(and(eq(reminders.householdId, householdId), eq(reminders.taskId, taskId)))
+        .orderBy(reminders.nextFireAt);
+    },
+
+    async listForEvent(householdId: string, eventId: string) {
+      return db
+        .select()
+        .from(reminders)
+        .where(and(eq(reminders.householdId, householdId), eq(reminders.eventId, eventId)))
+        .orderBy(reminders.nextFireAt);
     },
 
     async list(householdId: string) {
@@ -109,11 +160,10 @@ export type CreateTaskInput = {
   conversationId?: string;
   title: string;
   notes?: string;
-  listId?: string | null;
+  eventId?: string | null;
   assigneeMemberId?: string | null;
   dueAt: Date | null;
   timezone: string;
-  nagIntervalMin?: number | null;
 };
 
 export function createTaskService(db: Db) {
@@ -127,12 +177,10 @@ export function createTaskService(db: Db) {
           conversationId: input.conversationId,
           title: input.title,
           notes: input.notes,
-          listId: input.listId ?? null,
+          eventId: input.eventId ?? null,
           assigneeMemberId: input.assigneeMemberId ?? null,
           dueAt: input.dueAt,
           timezone: input.timezone,
-          nagIntervalMin: input.nagIntervalMin ?? 30,
-          nextNudgeAt: input.dueAt, // nagging starts when the task is due
           status: "open",
         })
         .returning();
@@ -153,7 +201,7 @@ export function createTaskService(db: Db) {
         .limit(5);
     },
 
-    /** The task most recently nudged in this conversation (for bare "done"). */
+    /** The task most recently notified in this conversation (for bare "done"). */
     async lastNudged(householdId: string, conversationId: string | null) {
       const rows = await db
         .select({ task: tasks })
@@ -161,7 +209,7 @@ export function createTaskService(db: Db) {
         .innerJoin(tasks, eq(deliveries.taskId, tasks.id))
         .where(
           and(
-            eq(deliveries.kind, "task_nudge"),
+            isNotNull(deliveries.taskId),
             eq(tasks.householdId, householdId),
             eq(tasks.status, "open"),
             conversationId ? eq(deliveries.conversationId, conversationId) : undefined
@@ -180,9 +228,15 @@ export function createTaskService(db: Db) {
     async complete(id: string) {
       const [done] = await db
         .update(tasks)
-        .set({ status: "done", completedAt: new Date(), nextNudgeAt: null, updatedAt: new Date() })
+        .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
         .where(and(eq(tasks.id, id), eq(tasks.status, "open")))
         .returning();
+      if (done) {
+        await db
+          .update(reminders)
+          .set({ status: "cancelled", nextFireAt: null, updatedAt: new Date() })
+          .where(and(eq(reminders.taskId, id), eq(reminders.status, "scheduled")));
+      }
       return done ?? null;
     },
 
@@ -200,20 +254,23 @@ export function createTaskService(db: Db) {
     async cancel(id: string) {
       await db
         .update(tasks)
-        .set({ status: "cancelled", nextNudgeAt: null, updatedAt: new Date() })
+        .set({ status: "cancelled", updatedAt: new Date() })
         .where(eq(tasks.id, id));
+      await db
+        .update(reminders)
+        .set({ status: "cancelled", nextFireAt: null, updatedAt: new Date() })
+        .where(and(eq(reminders.taskId, id), eq(reminders.status, "scheduled")));
     },
 
     async update(
       id: string,
       patch: Partial<{
         title: string;
-        dueAt: Date;
-        nextNudgeAt: Date | null;
-        listId: string | null;
+        dueAt: Date | null;
+        eventId: string | null;
         status: "open" | "done" | "cancelled";
-        nagIntervalMin: number;
         completedAt: Date | null;
+        notes: string | null;
       }>
     ) {
       const [row] = await db
@@ -224,6 +281,14 @@ export function createTaskService(db: Db) {
       return row!;
     },
 
+    async get(householdId: string, id: string) {
+      const [row] = await db
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.id, id), eq(tasks.householdId, householdId)));
+      return row ?? null;
+    },
+
     async list(householdId: string) {
       return db
         .select()
@@ -231,6 +296,14 @@ export function createTaskService(db: Db) {
         .where(eq(tasks.householdId, householdId))
         .orderBy(desc(tasks.createdAt))
         .limit(300);
+    },
+
+    async listByEvent(householdId: string, eventId: string) {
+      return db
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.householdId, householdId), eq(tasks.eventId, eventId)))
+        .orderBy(asc(tasks.dueAt), desc(tasks.createdAt));
     },
   };
 }
@@ -245,13 +318,12 @@ export type CreateTaskSeriesInput = {
   conversationId?: string;
   title: string;
   notes?: string;
-  listId?: string | null;
+  eventId?: string | null;
   assigneeMemberId?: string | null;
   /** First occurrence — anchors the recurrence. */
   firstDueAt: Date;
   rrule: string;
   timezone: string;
-  nagIntervalMin?: number | null;
 };
 
 /**
@@ -269,10 +341,8 @@ export async function materializeOccurrence(
     | "conversationId"
     | "title"
     | "notes"
-    | "listId"
     | "assigneeMemberId"
     | "timezone"
-    | "nagIntervalMin"
   >,
   scheduledFor: Date
 ) {
@@ -284,12 +354,9 @@ export async function materializeOccurrence(
       conversationId: series.conversationId,
       title: series.title,
       notes: series.notes,
-      listId: series.listId,
       assigneeMemberId: series.assigneeMemberId,
       dueAt: scheduledFor,
       timezone: series.timezone,
-      nagIntervalMin: series.nagIntervalMin,
-      nextNudgeAt: scheduledFor,
       seriesId: series.id,
       scheduledFor,
       status: "open",
@@ -316,12 +383,10 @@ export function createTaskSeriesService(db: Db) {
           conversationId: input.conversationId,
           title: input.title,
           notes: input.notes,
-          listId: input.listId ?? null,
           assigneeMemberId: input.assigneeMemberId ?? null,
           rrule: input.rrule,
           timezone: input.timezone,
           anchorAt: input.firstDueAt,
-          nagIntervalMin: input.nagIntervalMin ?? 30,
           nextOccurrenceAt: input.firstDueAt,
           status: "active",
         })
@@ -353,10 +418,8 @@ export function createTaskSeriesService(db: Db) {
         | "conversationId"
         | "title"
         | "notes"
-        | "listId"
         | "assigneeMemberId"
         | "dueAt"
-        | "nagIntervalMin"
       >,
       rrule: string,
       timezone: string
@@ -371,12 +434,10 @@ export function createTaskSeriesService(db: Db) {
           conversationId: task.conversationId ?? undefined,
           title: task.title,
           notes: task.notes ?? undefined,
-          listId: task.listId,
           assigneeMemberId: task.assigneeMemberId,
           rrule,
           timezone,
           anchorAt: task.dueAt,
-          nagIntervalMin: task.nagIntervalMin,
           nextOccurrenceAt: nextOccurrence(rrule, timezone, task.dueAt, task.dueAt),
           status: "active",
         })
@@ -402,9 +463,7 @@ export function createTaskSeriesService(db: Db) {
       patch: Partial<{
         title: string;
         notes: string | null;
-        listId: string | null;
         assigneeMemberId: string | null;
-        nagIntervalMin: number;
         rrule: string;
       }>
     ) {
@@ -430,7 +489,7 @@ export function createTaskSeriesService(db: Db) {
     /**
      * Cancel a series. By default open occurrences are cancelled too ("make
      * it stop"); pass cancelOpenTasks: false to keep the current occurrence
-     * nagging while only stopping future generation.
+     * notifying while only stopping future generation.
      */
     async cancel(householdId: string, id: string, opts: { cancelOpenTasks?: boolean } = {}) {
       const [row] = await db
@@ -439,10 +498,20 @@ export function createTaskSeriesService(db: Db) {
         .where(and(eq(taskSeries.id, id), eq(taskSeries.householdId, householdId)))
         .returning();
       if (row && (opts.cancelOpenTasks ?? true)) {
+        const open = await db
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(and(eq(tasks.seriesId, id), eq(tasks.status, "open")));
         await db
           .update(tasks)
-          .set({ status: "cancelled", nextNudgeAt: null, updatedAt: new Date() })
+          .set({ status: "cancelled", updatedAt: new Date() })
           .where(and(eq(tasks.seriesId, id), eq(tasks.status, "open")));
+        if (open.length > 0) {
+          await db
+            .update(reminders)
+            .set({ status: "cancelled", nextFireAt: null, updatedAt: new Date() })
+            .where(and(eq(reminders.status, "scheduled"), inArray(reminders.taskId, open.map((t) => t.id))));
+        }
       }
       return row ?? null;
     },
@@ -458,14 +527,28 @@ export function createTaskSeriesService(db: Db) {
   };
 }
 
+export type ChecklistItemRow = typeof checklistItems.$inferSelect;
+
 export function createListService(db: Db) {
   return {
-    async create(householdId: string, name: string, creatorMemberId?: string) {
+    async create(
+      householdId: string,
+      name: string,
+      creatorMemberId?: string,
+      taskId?: string | null,
+      eventId?: string | null
+    ) {
       const existing = await this.findByName(householdId, name);
       if (existing) return existing;
       const [row] = await db
         .insert(lists)
-        .values({ householdId, name: name.trim(), createdByMemberId: creatorMemberId })
+        .values({
+          householdId,
+          name: name.trim(),
+          createdByMemberId: creatorMemberId,
+          taskId: taskId ?? null,
+          eventId: eventId ?? null,
+        })
         .returning();
       return row!;
     },
@@ -492,14 +575,27 @@ export function createListService(db: Db) {
       return row ?? null;
     },
     async rename(householdId: string, id: string, newName: string) {
+      return this.update(householdId, id, { name: newName });
+    },
+    async update(
+      householdId: string,
+      id: string,
+      patch: { name?: string; taskId?: string | null; eventId?: string | null }
+    ) {
+      const current = await this.get(householdId, id);
+      if (!current) return null;
       const [row] = await db
         .update(lists)
-        .set({ name: newName.trim() })
+        .set({
+          name: patch.name !== undefined ? patch.name.trim() : current.name,
+          taskId: patch.taskId !== undefined ? patch.taskId : current.taskId,
+          eventId: patch.eventId !== undefined ? patch.eventId : current.eventId,
+        })
         .where(and(eq(lists.id, id), eq(lists.householdId, householdId)))
         .returning();
       return row ?? null;
     },
-    /** Deleting a list orphans its tasks back to "general" (list_id null via FK). */
+    /** Deleting a list removes its checklist items. */
     async remove(householdId: string, id: string) {
       const [row] = await db
         .delete(lists)
@@ -510,55 +606,84 @@ export function createListService(db: Db) {
     async list(householdId: string) {
       return db.select().from(lists).where(eq(lists.householdId, householdId)).orderBy(lists.name);
     },
-    /** List entries are unscheduled tasks scoped to this list. */
-    async addItems(
-      householdId: string,
-      listId: string,
-      titles: string[],
-      creatorMemberId?: string
-    ) {
+    async listForTask(householdId: string, taskId: string) {
+      return db
+        .select()
+        .from(lists)
+        .where(and(eq(lists.householdId, householdId), eq(lists.taskId, taskId)))
+        .orderBy(lists.name);
+    },
+    async listForEvent(householdId: string, eventId: string) {
+      return db
+        .select()
+        .from(lists)
+        .where(and(eq(lists.householdId, householdId), eq(lists.eventId, eventId)))
+        .orderBy(lists.name);
+    },
+
+    /** Checklist entries — never tasks. */
+    async addItems(householdId: string, listId: string, titles: string[]) {
+      const list = await this.get(householdId, listId);
+      if (!list) return [];
+      const existing = await this.items(householdId, listId);
+      const start = existing.length;
       const values = titles
         .map((title) => title.trim())
         .filter(Boolean)
-        .map((title) => ({
-          householdId,
+        .map((body, i) => ({
           listId,
-          title,
-          creatorMemberId,
-          dueAt: null,
-          nextNudgeAt: null,
-          status: "open" as const,
+          body,
+          sortOrder: start + i,
         }));
       if (values.length === 0) return [];
-      return db.insert(tasks).values(values).returning();
+      return db.insert(checklistItems).values(values).returning();
     },
     async items(householdId: string, listId: string) {
+      const list = await this.get(householdId, listId);
+      if (!list) return [];
       return db
         .select()
-        .from(tasks)
-        .where(
-          and(
-            eq(tasks.householdId, householdId),
-            eq(tasks.listId, listId),
-            ne(tasks.status, "cancelled")
-          )
-        )
-        .orderBy(asc(tasks.createdAt));
+        .from(checklistItems)
+        .where(eq(checklistItems.listId, listId))
+        .orderBy(asc(checklistItems.sortOrder), asc(checklistItems.createdAt));
     },
     async findItemsByRef(householdId: string, listId: string, ref: string) {
+      const list = await this.get(householdId, listId);
+      if (!list) return [];
       return db
         .select()
-        .from(tasks)
-        .where(
-          and(
-            eq(tasks.householdId, householdId),
-            eq(tasks.listId, listId),
-            ne(tasks.status, "cancelled"),
-            ilike(tasks.title, `%${ref.trim()}%`)
-          )
-        )
-        .orderBy(asc(tasks.createdAt))
+        .from(checklistItems)
+        .where(and(eq(checklistItems.listId, listId), ilike(checklistItems.body, `%${ref.trim()}%`)))
+        .orderBy(asc(checklistItems.sortOrder), asc(checklistItems.createdAt))
         .limit(5);
+    },
+    async updateItem(
+      householdId: string,
+      itemId: string,
+      patch: Partial<{ body: string; completedAt: Date | null; sortOrder: number }>
+    ) {
+      const [item] = await db
+        .select({ item: checklistItems, listHouseholdId: lists.householdId })
+        .from(checklistItems)
+        .innerJoin(lists, eq(lists.id, checklistItems.listId))
+        .where(and(eq(checklistItems.id, itemId), eq(lists.householdId, householdId)));
+      if (!item) return null;
+      const [row] = await db
+        .update(checklistItems)
+        .set(patch)
+        .where(eq(checklistItems.id, itemId))
+        .returning();
+      return row ?? null;
+    },
+    async removeItem(householdId: string, itemId: string) {
+      const [item] = await db
+        .select({ id: checklistItems.id })
+        .from(checklistItems)
+        .innerJoin(lists, eq(lists.id, checklistItems.listId))
+        .where(and(eq(checklistItems.id, itemId), eq(lists.householdId, householdId)));
+      if (!item) return null;
+      await db.delete(checklistItems).where(eq(checklistItems.id, itemId));
+      return item;
     },
   };
 }
@@ -669,6 +794,14 @@ export function createEventService(db: Db) {
         .where(and(eq(events.householdId, householdId), ilike(events.title, `%${ref}%`)))
         .orderBy(desc(events.startsAt))
         .limit(5);
+    },
+
+    async get(householdId: string, id: string) {
+      const [row] = await db
+        .select()
+        .from(events)
+        .where(and(eq(events.id, id), eq(events.householdId, householdId)));
+      return row ?? null;
     },
 
     /** Deleting a recurring event removes the whole series. */

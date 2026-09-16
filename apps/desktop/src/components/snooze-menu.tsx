@@ -7,9 +7,8 @@ import { localToIso } from "@/lib/api";
 import { localDate } from "@/lib/format";
 
 /**
- * Quick postpone menu for a todo occurrence. Only the effective due time
- * (and next nudge) moves — for recurring todos the rest of the series keeps
- * its fixed schedule.
+ * Quick postpone menu for a task occurrence. Only the effective due time
+ * moves — for recurring tasks the rest of the series keeps its fixed schedule.
  */
 export function SnoozeMenu({
   tz,
@@ -56,7 +55,7 @@ export function SnoozeMenu({
           variant="ghost"
           size="sm"
           type="button"
-          className="text-muted-foreground h-6 w-6 p-0 opacity-0 transition-opacity group-hover:opacity-100"
+          className="text-muted-foreground h-8 w-8 p-0 opacity-100 transition-opacity md:h-6 md:w-6 md:opacity-0 md:group-hover:opacity-100"
           title={isRecurring ? "Postpone this occurrence" : "Postpone"}
         >
           <Clock3Icon className="size-3.5" />

@@ -34,12 +34,10 @@ for (const task of legacy) {
       conversationId: task.conversationId,
       title: task.title,
       notes: task.notes,
-      listId: task.listId,
       assigneeMemberId: task.assigneeMemberId,
       rrule: task.rrule!,
       timezone: task.timezone,
       anchorAt: task.dueAt,
-      nagIntervalMin: task.nagIntervalMin,
       nextOccurrenceAt: nextOccurrence(task.rrule!, task.timezone, task.dueAt, new Date()),
       status: "active",
     })

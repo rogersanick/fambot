@@ -7,6 +7,7 @@ import { AIUnavailableError } from "@fambot/ai";
 import { auth } from "./auth";
 import { api, oauthCallback } from "./routes";
 import { ingest } from "./ingest";
+import { bridgeLogin } from "./bridge-login";
 import { mcpApp } from "./mcp";
 import { bridgeConnected, bridgeDisconnected, bridgeMessage } from "./bridge-ws";
 import { db } from "./context";
@@ -18,6 +19,8 @@ import {
   verifyTelnyxSignature,
 } from "./telnyx";
 import { env, telnyxEnabled } from "./env";
+import { isAllowedOrigin } from "./origins";
+import { publicArtifacts } from "./public-artifacts";
 
 const { upgradeWebSocket, websocket } = createBunWebSocket<ServerWebSocket>();
 
@@ -40,12 +43,15 @@ app.onError((error, c) => {
 app.use(
   "*",
   cors({
-    origin: [env.APP_URL, "http://localhost:5173", "http://localhost:1420", "tauri://localhost"],
+    origin: (origin) => (isAllowedOrigin(origin, env.APP_URL) ? origin : null),
     credentials: true,
   })
 );
 
 app.get("/health", (c) => c.json({ ok: true, service: "fambot-api" }));
+
+// Public artifact previews (no session — iMessage/SMS unfurl + login card)
+app.route("/", publicArtifacts);
 
 // Public client config (pre-auth): which sign-in methods exist.
 app.get("/api/config", async (c) => {
@@ -62,8 +68,9 @@ app.on(["GET", "POST"], "/api/auth/*", (c) => auth.handler(c.req.raw));
 // Google Calendar OAuth callback (no session — browser redirect from Google)
 app.route("/", oauthCallback);
 
-// Bridge inbound webhook (token auth)
+// Bridge inbound webhook (token auth) + interactive owner login
 app.route("/", ingest);
+app.route("/", bridgeLogin);
 
 // MCP tool surface (delegated bearer-token auth; used by the built-in agent
 // over loopback today, external agents later)

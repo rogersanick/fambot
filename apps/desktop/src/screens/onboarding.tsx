@@ -41,12 +41,12 @@ export function OnboardingScreen({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <main className="flex min-h-svh flex-col items-center justify-center gap-6 p-6">
+    <main className="flex min-h-svh flex-col items-center justify-center gap-6 p-6 pt-[max(1.5rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
       <FambotLogo className="text-primary animate-fade-up h-10 sm:h-12" />
       <Card className="animate-fade-up w-full max-w-sm" style={{ animationDelay: "120ms" }}>
         <CardHeader>
           <CardTitle className="font-serif text-xl">Set up your household</CardTitle>
-          <CardDescription>Reminders, todos, and events are shared within it.</CardDescription>
+          <CardDescription>Reminders, tasks, lists, and events are shared within it.</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="grid gap-4">

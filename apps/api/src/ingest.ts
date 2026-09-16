@@ -6,7 +6,8 @@ import { processInbound } from "./pipeline";
 
 /**
  * Bridge inbound webhook (replaces the design doc's BlueBubbles webhook —
- * our transport is the imsg CLI relay). Auth: static bridge token.
+ * our transport is the imsg CLI relay). Auth: static bridge token, issued to
+ * household owners via POST /api/bridge/login.
  */
 
 const IngestSchema = z.object({

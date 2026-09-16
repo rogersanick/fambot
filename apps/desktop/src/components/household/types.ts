@@ -8,6 +8,7 @@ import type {
   TaskSeries,
 } from "@/lib/api";
 import { describeRRule } from "@/lib/recurrence";
+import type { ArtifactType } from "@fambot/shared";
 
 /** Row shapes the ported UI components render (kept from the old portal). */
 
@@ -29,17 +30,26 @@ export type TaskRow = {
   status: string;
   due_at: string | null;
   completed_at: string | null;
-  list_id: string | null;
+  event_id: string | null;
   assignee: { display_name: string } | null;
   series_id: string | null;
-  /** Human recurrence label ("every week on Sun"), null for one-off todos. */
+  /** Human recurrence label ("every week on Sun"), null for one-off tasks. */
   recurrence: string | null;
-  nag_interval_min: number;
+};
+
+export type ChecklistItemRow = {
+  id: string;
+  body: string;
+  completed_at: string | null;
+  sort_order: number;
 };
 
 export type ListRow = {
   id: string;
   name: string;
+  task_id: string | null;
+  event_id: string | null;
+  items: ChecklistItemRow[];
 };
 
 export type EventRow = {
@@ -48,6 +58,8 @@ export type EventRow = {
   starts_at: string;
   ends_at: string | null;
   location: string | null;
+  /** Event description/body. Reminders are associated objects, not this text. */
+  notes: string | null;
   /** Human recurrence label, null for one-off events. */
   recurrence: string | null;
 };
@@ -58,6 +70,8 @@ export type ReminderRow = {
   fire_at: string;
   status: string; // pending | sent | cancelled
   recurring: boolean;
+  until_completed: boolean;
+  parent: { type: "task" | "event"; id: string; title: string } | null;
 };
 
 /** Event pre-localized to the household timezone for the client calendar. */
@@ -68,8 +82,11 @@ export type CalendarEvent = {
   day: string;
   time: string;
   location: string | null;
+  /** Event description/body. */
+  notes: string | null;
   /** Set for occurrences of a recurring series (id = the series id). */
   recurrence: string | null;
+  links?: Array<{ type: ArtifactType; id: string; title: string; when?: string }>;
 };
 
 // --- adapters: API rows -> UI rows ---------------------------------------------
@@ -108,11 +125,10 @@ export function toTaskRows(tasks: Task[], members: Member[], series: TaskSeries[
       status: t.status,
       due_at: t.dueAt,
       completed_at: t.completedAt,
-      list_id: t.listId,
+      event_id: t.eventId,
       assignee: t.assigneeMemberId ? { display_name: nameOf.get(t.assigneeMemberId) ?? "?" } : null,
       series_id: t.seriesId,
       recurrence: s ? describeRRule(s.rrule) : t.rrule ? describeRRule(t.rrule) : null,
-      nag_interval_min: t.nagIntervalMin,
     };
   });
 }
@@ -124,16 +140,43 @@ export function toEventRows(events: EventItem[]): EventRow[] {
     starts_at: e.startsAt,
     ends_at: e.endsAt,
     location: e.location,
+    notes: e.notes ?? null,
     recurrence: e.rrule ? describeRRule(e.rrule) : null,
   }));
 }
 
-export function toReminderRows(reminders: Reminder[]): ReminderRow[] {
+export function toListRows(lists: import("@/lib/api").List[]): ListRow[] {
+  return lists.map((l) => ({
+    id: l.id,
+    name: l.name,
+    task_id: l.taskId,
+    event_id: l.eventId,
+    items: (l.items ?? []).map((item) => ({
+      id: item.id,
+      body: item.body,
+      completed_at: item.completedAt,
+      sort_order: item.sortOrder,
+    })),
+  }));
+}
+
+export function toReminderRows(
+  reminders: Reminder[],
+  parents?: { tasks?: Task[]; events?: EventItem[] }
+): ReminderRow[] {
+  const taskTitle = new Map((parents?.tasks ?? []).map((t) => [t.id, t.title]));
+  const eventTitle = new Map((parents?.events ?? []).map((e) => [e.id, e.title]));
   return reminders.map((r) => ({
     id: r.id,
     message: r.title,
     fire_at: r.nextFireAt ?? r.fireAt ?? r.createdAt,
     status: r.status === "scheduled" ? "pending" : r.status === "done" ? "sent" : "cancelled",
     recurring: Boolean(r.rrule),
+    until_completed: r.untilCompleted,
+    parent: r.taskId
+      ? { type: "task" as const, id: r.taskId, title: taskTitle.get(r.taskId) ?? "Task" }
+      : r.eventId
+        ? { type: "event" as const, id: r.eventId, title: eventTitle.get(r.eventId) ?? "Event" }
+        : null,
   }));
 }

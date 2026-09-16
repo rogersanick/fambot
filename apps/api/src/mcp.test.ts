@@ -76,11 +76,18 @@ describe("mcp http endpoint (integration)", () => {
     const names = tools.map((t) => t.name);
     expect(names).toContain("create_list");
     expect(names).toContain("get_context");
+    expect(names).toContain("link_list_to_task");
+    expect(names).toContain("link_list_to_event");
+    expect(names).toContain("link_reminder_to_task");
+    expect(names).toContain("link_reminder_to_event");
     expect(names).not.toContain("clarify");
     expect(names).not.toContain("chat_reply");
 
     const created = parseResult(
-      await client.callTool({ name: "create_list", arguments: { name: "camping", items: ["tent"] } })
+      await client.callTool({
+        name: "create_list",
+        arguments: { name: "camping", items: ["tent"], task_ref: null, event_ref: null },
+      })
     );
     expect(created.status).toBe("executed");
 
