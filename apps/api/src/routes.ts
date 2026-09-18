@@ -104,11 +104,18 @@ const PhoneSchema = z
   .refine((value) => normalizePhone(value) !== null, "Enter a valid phone number")
   .transform((value) => normalizePhone(value)!);
 
+const ImessageHandleSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .transform((value) => normalizePhone(value) ?? value.toLowerCase());
+
 const CreateHouseholdSchema = z.object({
   name: z.string().min(1),
   timezone: z.string().default("America/New_York"),
   ownerPhone: PhoneSchema,
   usePhoneForImessage: z.boolean().default(false),
+  imessageHandle: ImessageHandleSchema.optional(),
 });
 
 api.post("/households", async (c) => {
@@ -136,7 +143,11 @@ api.post("/households", async (c) => {
     if (body.usePhoneForImessage) {
       await tx
         .insert(identities)
-        .values({ memberId: member!.id, type: "imessage", value: body.ownerPhone });
+        .values({
+          memberId: member!.id,
+          type: "imessage",
+          value: body.imessageHandle ?? body.ownerPhone,
+        });
     }
     // Default notification channels: SMS broadcasts by default, iMessage opt-in.
     await tx.insert(householdNotificationChannels).values([
@@ -429,7 +440,7 @@ api.patch("/households/:hid/members/:mid/phone", async (c) => {
 
 const SetMemberImessageSchema = z.object({
   /** E.164 number or Apple ID email; null clears the handle. */
-  handle: z.string().trim().min(3).nullable(),
+  handle: ImessageHandleSchema.nullable(),
 });
 
 api.patch("/households/:hid/members/:mid/imessage", async (c) => {

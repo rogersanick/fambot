@@ -210,6 +210,7 @@ export const api = {
     timezone: string;
     ownerPhone: string;
     usePhoneForImessage?: boolean;
+    imessageHandle?: string;
   }) =>
     req<{ household: Household; member: Member }>("/households", { method: "POST", body: JSON.stringify(body) }),
   household: (hid: string) => req<HouseholdBundle>(`/households/${hid}`),

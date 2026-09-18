@@ -15,7 +15,7 @@ import { PhoneInput } from "@/components/phone-input";
 export function OnboardingScreen({ onCreated }: { onCreated: () => void }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [usePhoneForImessage, setUsePhoneForImessage] = useState(false);
+  const [imessageEnabled, setImessageEnabled] = useState(false);
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -28,12 +28,14 @@ export function OnboardingScreen({ onCreated }: { onCreated: () => void }) {
       setPending(false);
       return;
     }
+    const imessageHandle = String(fd.get("imessage_handle") ?? "").trim();
     try {
       await api.createHousehold({
         name: String(fd.get("name") ?? "").trim(),
         timezone: String(fd.get("timezone") ?? "").trim() || browserTimeZone(),
         ownerPhone,
-        usePhoneForImessage,
+        usePhoneForImessage: imessageEnabled,
+        imessageHandle: imessageEnabled && imessageHandle ? imessageHandle : undefined,
       });
       onCreated();
     } catch {
@@ -70,18 +72,31 @@ export function OnboardingScreen({ onCreated }: { onCreated: () => void }) {
             </div>
             <div className="flex items-center justify-between gap-3 rounded-md border p-3">
               <div className="grid gap-1">
-                <Label htmlFor="use-phone-for-imessage">Use this number for iMessage</Label>
+                <Label htmlFor="enable-imessage">Enable iMessage</Label>
                 <p className="text-muted-foreground text-xs">
-                  Let the Mac bridge recognize iMessages sent from this phone number.
+                  Uses your SMS phone number unless you provide another handle.
                 </p>
               </div>
               <Switch
-                id="use-phone-for-imessage"
-                checked={usePhoneForImessage}
-                onCheckedChange={setUsePhoneForImessage}
-                aria-label="Use this phone number for iMessage"
+                id="enable-imessage"
+                checked={imessageEnabled}
+                onCheckedChange={setImessageEnabled}
+                aria-label="Enable iMessage"
               />
             </div>
+            {imessageEnabled && (
+              <div className="grid gap-2">
+                <Label htmlFor="imessage_handle">Different iMessage handle (optional)</Label>
+                <Input
+                  id="imessage_handle"
+                  name="imessage_handle"
+                  placeholder="Apple ID email or another phone number"
+                />
+                <p className="text-muted-foreground text-xs">
+                  Leave blank to use the SMS phone number above.
+                </p>
+              </div>
+            )}
             {error && <p className="text-destructive text-sm">{error}</p>}
             <SubmitButton pending={pending}>Create household</SubmitButton>
             <Button type="button" variant="ghost" size="sm" onClick={() => signOut()}>

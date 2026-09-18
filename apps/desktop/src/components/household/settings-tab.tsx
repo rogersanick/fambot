@@ -150,9 +150,7 @@ function MemberIdentityRow({
   isOwner: boolean;
 }) {
   const [editing, setEditing] = useState(false);
-  const [usePhoneForImessage, setUsePhoneForImessage] = useState(
-    Boolean(member.phone && member.handle === member.phone)
-  );
+  const [imessageEnabled, setImessageEnabled] = useState(Boolean(member.handle));
   const [manualInviteLink, setManualInviteLink] = useState<string | null>(null);
   const action = useAction(householdId);
 
@@ -236,7 +234,7 @@ function MemberIdentityRow({
             onClick={() =>
               setEditing((open) => {
                 if (!open) {
-                  setUsePhoneForImessage(Boolean(member.phone && member.handle === member.phone));
+                  setImessageEnabled(Boolean(member.handle));
                 }
                 return !open;
               })
@@ -273,16 +271,16 @@ function MemberIdentityRow({
               toast.error("Enter a valid phone number");
               return;
             }
-            if (usePhoneForImessage && !phone) {
-              toast.error("Add a valid phone number before enabling it for iMessage");
+            const rawHandle = String(fd.get("handle") ?? "").trim();
+            if (imessageEnabled && !phone && !rawHandle) {
+              toast.error("Add a phone number or a different iMessage handle");
               return;
             }
-            const rawHandle = String(fd.get("handle") ?? "").trim();
-            const handle = usePhoneForImessage
-              ? phone!
-              : rawHandle
+            const handle = imessageEnabled
+              ? rawHandle
                 ? (normalizePhone(rawHandle) ?? rawHandle.toLowerCase())
-                : "";
+                : phone!
+              : "";
             void action
               .run(async () => {
                 if (phone && phone !== member.phone) {
@@ -296,38 +294,37 @@ function MemberIdentityRow({
           }}
           className="mt-3 grid gap-3"
         >
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="grid gap-1">
-              <PhoneInput name="phone" defaultValue={member.phone ?? ""} placeholder="Phone (SMS)" />
-              <p className="text-muted-foreground text-xs">US numbers may omit +1.</p>
+          <div className="grid gap-1">
+            <PhoneInput name="phone" defaultValue={member.phone ?? ""} placeholder="Phone (SMS)" />
+            <p className="text-muted-foreground text-xs">US numbers may omit +1.</p>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
+            <div>
+              <p className="text-sm font-medium">Enable iMessage</p>
+              <p className="text-muted-foreground text-xs">
+                Uses this member&apos;s SMS number by default.
+              </p>
             </div>
+            <Switch
+              checked={imessageEnabled}
+              onCheckedChange={setImessageEnabled}
+              aria-label={`Enable iMessage for ${member.display_name}`}
+            />
+          </div>
+          {imessageEnabled && (
             <div className="grid gap-1">
               <Input
                 name="handle"
                 defaultValue={
                   member.handle && member.handle !== member.phone ? member.handle : ""
                 }
-                placeholder="Apple ID email or alternate iMessage number"
-                disabled={usePhoneForImessage}
+                placeholder="Apple ID email or another phone number"
               />
               <p className="text-muted-foreground text-xs">
-                {usePhoneForImessage ? "Using the phone number entered here." : "Optional Apple ID or alternate number."}
+                Optional. Leave blank to use the SMS number above.
               </p>
             </div>
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
-            <div>
-              <p className="text-sm font-medium">Use phone number for iMessage</p>
-              <p className="text-muted-foreground text-xs">
-                Match incoming iMessages from this member to their phone number.
-              </p>
-            </div>
-            <Switch
-              checked={usePhoneForImessage}
-              onCheckedChange={setUsePhoneForImessage}
-              aria-label={`Use ${member.display_name}'s phone number for iMessage`}
-            />
-          </div>
+          )}
           <SubmitButton className="justify-self-end" variant="outline" pending={action.pending}>
             Save
           </SubmitButton>
