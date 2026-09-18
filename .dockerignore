@@ -1,7 +1,9 @@
 .git
 node_modules
-apps/desktop
-apps/bridge
+apps/desktop/**
+!apps/desktop/package.json
+apps/bridge/**
+!apps/bridge/package.json
 **/.env
 **/.env.local
 **/.env.prod
