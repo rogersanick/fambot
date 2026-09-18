@@ -179,10 +179,34 @@ function MemberIdentityRow({
         ) : (
           <Badge variant="outline">phone only</Badge>
         )}
-        {isOwner && member.invite && member.invite.state !== "accepted" && (
-          <>
+        {editable && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              setEditing((open) => {
+                if (!open) {
+                  setImessageEnabled(Boolean(member.handle));
+                }
+                return !open;
+              })
+            }
+          >
+            {editing ? "Close" : "Edit"}
+          </Button>
+        )}
+      </div>
+      {isOwner && member.invite && member.invite.state !== "accepted" && (
+        <div className="bg-muted/40 mt-3 flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
+          <div>
+            <p className="text-sm font-medium">Invite pending</p>
+            <p className="text-muted-foreground text-xs">
+              Copy the link to send it without SMS.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
             <Button
-              variant="ghost"
+              variant="default"
               size="sm"
               disabled={action.pending}
               onClick={() => {
@@ -206,14 +230,14 @@ function MemberIdentityRow({
               Copy invite link
             </Button>
             <Button
-              variant="ghost"
+              variant="outline"
               size="sm"
               disabled={action.pending}
               onClick={() =>
                 void action.run(() => api.resendInvite(householdId, member.invite!.id))
               }
             >
-              Resend
+              Resend SMS
             </Button>
             <Button
               variant="ghost"
@@ -225,25 +249,9 @@ function MemberIdentityRow({
             >
               Cancel
             </Button>
-          </>
-        )}
-        {editable && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() =>
-              setEditing((open) => {
-                if (!open) {
-                  setImessageEnabled(Boolean(member.handle));
-                }
-                return !open;
-              })
-            }
-          >
-            {editing ? "Close" : "Edit"}
-          </Button>
-        )}
-      </div>
+          </div>
+        </div>
+      )}
       {manualInviteLink && (
         <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
           <Input aria-label={`Invite link for ${member.display_name}`} value={manualInviteLink} readOnly />
