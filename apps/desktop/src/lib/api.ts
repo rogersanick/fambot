@@ -205,7 +205,12 @@ export const api = {
       aiConfigured: false,
     })),
   me: () => req<Me>("/me"),
-  createHousehold: (body: { name: string; timezone: string; ownerPhone: string }) =>
+  createHousehold: (body: {
+    name: string;
+    timezone: string;
+    ownerPhone: string;
+    usePhoneForImessage?: boolean;
+  }) =>
     req<{ household: Household; member: Member }>("/households", { method: "POST", body: JSON.stringify(body) }),
   household: (hid: string) => req<HouseholdBundle>(`/households/${hid}`),
   updateHousehold: (hid: string, body: { name?: string; timezone?: string; botName?: string }) =>

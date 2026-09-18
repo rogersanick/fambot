@@ -3,6 +3,7 @@ import { normalizePhone } from "@fambot/shared/phone";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { SubmitButton } from "@/components/submit-button";
 import { FambotLogo } from "@/components/robot/logo";
 import { api } from "@/lib/api";
@@ -14,6 +15,7 @@ import { PhoneInput } from "@/components/phone-input";
 export function OnboardingScreen({ onCreated }: { onCreated: () => void }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [usePhoneForImessage, setUsePhoneForImessage] = useState(false);
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -31,6 +33,7 @@ export function OnboardingScreen({ onCreated }: { onCreated: () => void }) {
         name: String(fd.get("name") ?? "").trim(),
         timezone: String(fd.get("timezone") ?? "").trim() || browserTimeZone(),
         ownerPhone,
+        usePhoneForImessage,
       });
       onCreated();
     } catch {
@@ -64,6 +67,20 @@ export function OnboardingScreen({ onCreated }: { onCreated: () => void }) {
               <p className="text-muted-foreground text-xs">
                 US numbers may omit +1. Fambot texts your reminders here and recognizes your replies.
               </p>
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+              <div className="grid gap-1">
+                <Label htmlFor="use-phone-for-imessage">Use this number for iMessage</Label>
+                <p className="text-muted-foreground text-xs">
+                  Let the Mac bridge recognize iMessages sent from this phone number.
+                </p>
+              </div>
+              <Switch
+                id="use-phone-for-imessage"
+                checked={usePhoneForImessage}
+                onCheckedChange={setUsePhoneForImessage}
+                aria-label="Use this phone number for iMessage"
+              />
             </div>
             {error && <p className="text-destructive text-sm">{error}</p>}
             <SubmitButton pending={pending}>Create household</SubmitButton>

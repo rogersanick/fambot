@@ -108,6 +108,7 @@ const CreateHouseholdSchema = z.object({
   name: z.string().min(1),
   timezone: z.string().default("America/New_York"),
   ownerPhone: PhoneSchema,
+  usePhoneForImessage: z.boolean().default(false),
 });
 
 api.post("/households", async (c) => {
@@ -132,6 +133,11 @@ api.post("/households", async (c) => {
     await tx
       .insert(identities)
       .values({ memberId: member!.id, type: "phone", value: body.ownerPhone });
+    if (body.usePhoneForImessage) {
+      await tx
+        .insert(identities)
+        .values({ memberId: member!.id, type: "imessage", value: body.ownerPhone });
+    }
     // Default notification channels: SMS broadcasts by default, iMessage opt-in.
     await tx.insert(householdNotificationChannels).values([
       { householdId: household!.id, channel: "sms", enabled: true },
