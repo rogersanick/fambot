@@ -5,6 +5,10 @@ node_modules/
 .env
 .env.local
 .env*.local
+.env.fly
+.env.production
+.env.prod
+!apps/desktop/.env.prod
 
 # build output
 dist/

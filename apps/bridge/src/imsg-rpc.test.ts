@@ -251,6 +251,28 @@ test("rpc errors surface the actionable data field", async () => {
   h.rpc.stop();
 });
 
+test("database unavailable errors explain Full Disk Access", async () => {
+  const h = makeHarness();
+  await h.rpc.start();
+  const child = h.spawned[0]!;
+
+  child.handlers.set("chats.list", (req) => {
+    child.stdout.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: req.id,
+        error: { code: -32002, message: "Database unavailable" },
+      }) + "\n",
+    );
+  });
+
+  await assert.rejects(
+    h.rpc.chatsList(1),
+    /Grant Full Disk Access to the app running the bridge.*Cursor/
+  );
+  h.rpc.stop();
+});
+
 test("known-harmless macOS Contacts stderr noise is filtered from the log", async () => {
   const h = makeHarness();
   await h.rpc.start();

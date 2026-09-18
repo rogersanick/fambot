@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import { loadConfig, type BridgeConfig } from "./config";
 
 export const DEFAULT_LOCAL_API_URL = "http://localhost:8787";
-export const DEFAULT_PROD_API_URL = "https://fambot.fly.dev";
+export const DEFAULT_PROD_API_URL = "https://fambot-nrogers.fly.dev";
 
 export type BridgeTarget = "local" | "prod";
 
@@ -198,7 +198,7 @@ export async function prepareRuntime(
   let target = flags.target;
   if (!target) {
     target = parseTargetInput(
-      await io.ask("Target [local = localhost, prod = fambot.fly.dev]: ")
+      await io.ask("Target [local = localhost, prod = Fly]: ")
     );
   }
 

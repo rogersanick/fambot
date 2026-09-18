@@ -34,7 +34,10 @@ const outbound = new OutboundConsumer(config, state, (args) => rpc.send(args));
 
 console.log(`[bridge] starting (api=${config.API_URL})`);
 
-await rpc.start();
+await rpc.start().catch((err) => {
+  console.error(`[bridge] failed to start: ${err instanceof Error ? err.message : err}`);
+  process.exit(1);
+});
 outbound.start();
 
 process.on("SIGINT", () => {

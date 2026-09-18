@@ -1,12 +1,12 @@
 /**
  * One-command local environment: Postgres + schema + API + worker + web app,
- * with the macOS iMessage bridge and a public Telnyx webhook tunnel when their
- * prerequisites are available.
+ * with the macOS iMessage bridge. Pass --inbound-sms to expose a Cloudflare
+ * tunnel and point Telnyx at this machine (steals the prod webhook).
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { copyFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { wrapTelnyxNetworkError } from "@fambot/messaging";
+import { discoverTelnyx, registerTelnyxWebhook } from "./lib/telnyx";
 
 const root = resolve(import.meta.dir, "..");
 const apiEnvPath = resolve(root, "apps/api/.env");
@@ -119,45 +119,14 @@ async function prepareDatabase(env: NodeJS.ProcessEnv) {
   run("bun", ["run", "push"], resolve(root, "packages/database"), env);
 }
 
-type TelnyxNumber = {
-  phone_number?: string;
-  messaging_profile_id?: string | null;
-};
-
 function telnyxTunnelCommand(port: string) {
-  return `ngrok http ${port} --log stdout`;
+  return `cloudflared tunnel --url http://localhost:${port}`;
 }
 
 const NGROK_URL = /https:\/\/[a-z0-9-]+\.ngrok[-a-z0-9]*\.(?:app|dev|io)/i;
 const CLOUDFLARE_URL = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
 
-async function telnyxRequest(
-  path: string,
-  apiKey: string,
-  init?: RequestInit
-): Promise<Record<string, any>> {
-  let response: Response;
-  try {
-    response = await fetch(`https://api.telnyx.com/v2${path}`, {
-      ...init,
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-        ...init?.headers,
-      },
-      signal: AbortSignal.timeout(10_000),
-    });
-  } catch (error) {
-    throw wrapTelnyxNetworkError(error);
-  }
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Telnyx ${path} returned ${response.status}: ${body.slice(0, 200)}`);
-  }
-  return response.json() as Promise<Record<string, any>>;
-}
-
-async function discoverTelnyx(env: NodeJS.ProcessEnv) {
+async function fillTelnyxFromAccount(env: NodeJS.ProcessEnv) {
   const apiKey = env.TELNYX_API_KEY;
   if (!apiKey) {
     log("setup", "Telnyx SMS disabled (set TELNYX_API_KEY to enable it)");
@@ -165,43 +134,20 @@ async function discoverTelnyx(env: NodeJS.ProcessEnv) {
   }
 
   try {
-    const [keyResponse, numbersResponse] = await Promise.all([
-      env.TELNYX_PUBLIC_KEY
-        ? null
-        : telnyxRequest("/public_key", apiKey),
-      telnyxRequest("/messaging_phone_numbers?page[size]=100", apiKey),
-    ]);
-    const numbers = (numbersResponse.data ?? []) as TelnyxNumber[];
-    const configuredFrom = env.TELNYX_FROM_NUMBER;
-    const configuredProfile = env.TELNYX_MESSAGING_PROFILE_ID;
-    const candidates = numbers.filter(
-      (number) =>
-        number.messaging_profile_id &&
-        (!configuredFrom || number.phone_number === configuredFrom) &&
-        (!configuredProfile || number.messaging_profile_id === configuredProfile)
-    );
-
-    if (!env.TELNYX_PUBLIC_KEY) {
-      env.TELNYX_PUBLIC_KEY =
-        keyResponse?.data?.public_key ?? keyResponse?.data?.public ?? keyResponse?.public_key;
-    }
-    if (!env.TELNYX_FROM_NUMBER && candidates.length === 1) {
-      env.TELNYX_FROM_NUMBER = candidates[0]!.phone_number;
-    }
-    if (!env.TELNYX_MESSAGING_PROFILE_ID) {
-      const selected = numbers.find((number) => number.phone_number === env.TELNYX_FROM_NUMBER);
-      env.TELNYX_MESSAGING_PROFILE_ID =
-        selected?.messaging_profile_id ?? (candidates.length === 1
-          ? candidates[0]!.messaging_profile_id ?? undefined
-          : undefined);
-    }
+    const discovered = await discoverTelnyx({
+      apiKey,
+      fromNumber: env.TELNYX_FROM_NUMBER,
+      messagingProfileId: env.TELNYX_MESSAGING_PROFILE_ID,
+      publicKey: env.TELNYX_PUBLIC_KEY,
+    });
+    if (discovered.publicKey) env.TELNYX_PUBLIC_KEY = discovered.publicKey;
+    if (discovered.fromNumber) env.TELNYX_FROM_NUMBER = discovered.fromNumber;
+    if (discovered.messagingProfileId) env.TELNYX_MESSAGING_PROFILE_ID = discovered.messagingProfileId;
 
     if (!env.TELNYX_FROM_NUMBER) {
       log(
         "setup",
-        candidates.length > 1
-          ? "Telnyx has multiple configured numbers; set TELNYX_FROM_NUMBER to choose one"
-          : "No Telnyx number is attached to a messaging profile. Buy a US/Canada long-code number, attach it to a Messaging Profile, then restart bun dev."
+        "No Telnyx number is attached to a messaging profile. Buy a US/Canada long-code number, attach it to a Messaging Profile, then restart bun dev.",
       );
       return;
     }
@@ -209,7 +155,7 @@ async function discoverTelnyx(env: NodeJS.ProcessEnv) {
   } catch (error) {
     log(
       "setup",
-      error instanceof Error ? error.message : `Telnyx discovery failed: ${String(error)}`
+      error instanceof Error ? error.message : `Telnyx discovery failed: ${String(error)}`,
     );
   }
 }
@@ -256,23 +202,19 @@ function startProcess(args: {
   return child;
 }
 
-async function registerTelnyxWebhook(publicUrl: string, env: NodeJS.ProcessEnv) {
+async function pointTelnyxWebhook(publicUrl: string, env: NodeJS.ProcessEnv) {
   const apiKey = env.TELNYX_API_KEY;
   const profileId = env.TELNYX_MESSAGING_PROFILE_ID;
   if (!apiKey || !profileId) return;
-  const webhookUrl = `${publicUrl.replace(/\/$/, "")}/api/webhooks/telnyx`;
   try {
-    await telnyxRequest(`/messaging_profiles/${profileId}`, apiKey, {
-      method: "PATCH",
-      body: JSON.stringify({ webhook_url: webhookUrl, webhook_api_version: "2" }),
-    });
+    const webhookUrl = await registerTelnyxWebhook({ apiKey, profileId, publicUrl });
     log("tunnel", `Telnyx inbound webhook configured: ${webhookUrl}`);
   } catch (error) {
     log(
       "tunnel",
       `could not configure Telnyx webhook: ${
         error instanceof Error ? error.message : String(error)
-      }`
+      }`,
     );
   }
 }
@@ -285,40 +227,33 @@ function startTelnyxTunnel(env: NodeJS.ProcessEnv) {
     !env.TELNYX_MESSAGING_PROFILE_ID
   ) {
     if (env.TELNYX_API_KEY) {
-      const port = env.PORT ?? "8787";
       log(
         "setup",
-        "Inbound SMS webhook tunnel skipped until a number, messaging profile, and public key are configured."
+        "Inbound SMS webhook tunnel skipped until a number, messaging profile, and public key are configured.",
       );
-      log("setup", `Once they are, bun dev starts the tunnel automatically. Or run: ${telnyxTunnelCommand(port)}`);
     }
     return;
   }
 
   if (env.TELNYX_WEBHOOK_URL) {
-    void registerTelnyxWebhook(env.TELNYX_WEBHOOK_URL, env);
+    void pointTelnyxWebhook(env.TELNYX_WEBHOOK_URL, env);
     return;
   }
 
   const port = env.PORT ?? "8787";
-  // Prefer ngrok: Cloudflare quick tunnels often challenge Telnyx's webhook
-  // POSTs, so inbound texts never reach the local API.
   let command: string;
   let commandArgs: string[];
   let urlPattern: RegExp;
-  if (commandExists("ngrok")) {
-    command = "ngrok";
-    commandArgs = ["http", port, "--log", "stdout", "--log-format", "logfmt"];
-    urlPattern = NGROK_URL;
-    log("setup", "Using ngrok for Telnyx inbound webhooks");
-  } else if (commandExists("cloudflared")) {
+  if (commandExists("cloudflared")) {
     command = "cloudflared";
     commandArgs = ["tunnel", "--no-autoupdate", "--url", `http://localhost:${port}`];
     urlPattern = CLOUDFLARE_URL;
-    log(
-      "setup",
-      "Using a Cloudflare quick tunnel. If inbound texts never arrive, install ngrok (brew install ngrok) and restart."
-    );
+    log("setup", "Using a Cloudflare quick tunnel for Telnyx inbound webhooks");
+  } else if (commandExists("ngrok")) {
+    command = "ngrok";
+    commandArgs = ["http", port, "--log", "stdout", "--log-format", "logfmt"];
+    urlPattern = NGROK_URL;
+    log("setup", "Using ngrok for Telnyx inbound webhooks (install cloudflared to prefer Cloudflare)");
   } else if (commandExists("docker")) {
     tunnelContainer = `fambot-tunnel-${process.pid}`;
     command = "docker";
@@ -334,8 +269,9 @@ function startTelnyxTunnel(env: NodeJS.ProcessEnv) {
       `http://host.docker.internal:${port}`,
     ];
     urlPattern = CLOUDFLARE_URL;
+    log("setup", "Using Docker cloudflared for Telnyx inbound webhooks");
   } else {
-    log("setup", "Install ngrok to receive inbound Telnyx texts locally: brew install ngrok && ngrok config add-authtoken <token>");
+    log("setup", "Install cloudflared to receive inbound Telnyx texts locally: brew install cloudflared");
     log("setup", `Then run: ${telnyxTunnelCommand(port)}`);
     return;
   }
@@ -352,7 +288,7 @@ function startTelnyxTunnel(env: NodeJS.ProcessEnv) {
       const match = line.match(urlPattern);
       if (match) {
         registered = true;
-        void registerTelnyxWebhook(match[0], env);
+        void pointTelnyxWebhook(match[0], env);
       }
     },
   });
@@ -387,7 +323,7 @@ async function main() {
   // Keep bridge-only settings while forcing shared secrets to match the API.
   const bridgeEnv = { ...bridgeFileEnv, ...env };
   await prepareDatabase(env);
-  await discoverTelnyx(env);
+  await fillTelnyxFromAccount(env);
 
   startProcess({
     name: "api",
@@ -426,7 +362,7 @@ async function main() {
   }
 
   if (noBridge) {
-    log("setup", "iMessage bridge skipped (--no-bridge); run bun bridge:local or bun bridge:prod");
+    log("setup", "iMessage bridge skipped (--no-bridge); run bun bridge:dev or bun bridge:prod");
   } else if (process.platform === "darwin" && commandExists(bridgeEnv.IMSG_BIN || "imsg")) {
     startProcess({
       name: "bridge",
@@ -440,7 +376,15 @@ async function main() {
     log("setup", "iMessage bridge skipped (it requires macOS and imsg)");
   }
 
-  startTelnyxTunnel(env);
+  const inboundSms = process.argv.includes("--inbound-sms");
+  if (inboundSms) {
+    startTelnyxTunnel(env);
+  } else if (env.TELNYX_API_KEY) {
+    log(
+      "setup",
+      "Telnyx inbound webhook left on production. Pass --inbound-sms to tunnel localhost (this steals the webhook from Fly).",
+    );
+  }
   log(
     "setup",
     noWeb

@@ -15,6 +15,7 @@ COPY packages/domain/package.json packages/domain/
 COPY packages/ai/package.json packages/ai/
 COPY packages/messaging/package.json packages/messaging/
 COPY packages/calendar/package.json packages/calendar/
+COPY packages/mcp/package.json packages/mcp/
 RUN bun install --frozen-lockfile --production
 
 COPY packages packages

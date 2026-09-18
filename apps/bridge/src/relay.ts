@@ -2,6 +2,24 @@ import type { ImsgMessage } from "./imsg-rpc";
 import type { BridgeState } from "./state";
 import type { BridgeConfig } from "./config";
 
+const BOT_MESSAGE_DISCLAIMER =
+  "Automated message by Fambot.";
+
+function messagePreview(text: string | undefined): string {
+  if (!text) return "<no text>";
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return JSON.stringify(oneLine.length > 120 ? `${oneLine.slice(0, 117)}...` : oneLine);
+}
+
+export function formatBotMessage(prefix: string, text: string): string {
+  const banner = prefix.trim() || "🤖 FAMBOT";
+  return `${banner}
+━━━━━━━━━━━━━━━━━━━━
+${text.trim()}
+━━━━━━━━━━━━━━━━━━━━
+${BOT_MESSAGE_DISCLAIMER}`;
+}
+
 /**
  * Inbound relay: forwards every relevant iMessage to the API's ingest
  * endpoint. Ordered per-process queue with retry/backoff — the API dedupes by
@@ -13,15 +31,28 @@ export class InboundRelay {
   constructor(
     private config: BridgeConfig,
     private state: BridgeState,
-    private fetchFn: typeof fetch = fetch
+    private fetchFn: typeof fetch = fetch,
+    private log: (message: string) => void = console.log
   ) {}
 
   handle(msg: ImsgMessage): void {
+    this.log(
+      `[relay] iMessage received rowid=${msg.id} guid=${msg.guid ?? "unknown"} chat=${msg.chat_guid ?? "unknown"} sender=${msg.sender ?? "unknown"} fromMe=${Boolean(msg.is_from_me)} text=${messagePreview(msg.text)}`
+    );
     const text = msg.text?.trim();
-    if (!text) return; // attachments/reactions
-    if (!msg.chat_guid || !msg.guid) return;
+    if (!text) {
+      this.log(`[relay] skipped rowid=${msg.id}: no text (attachment or reaction)`);
+      return;
+    }
+    if (!msg.chat_guid || !msg.guid) {
+      this.log(`[relay] skipped rowid=${msg.id}: missing chat GUID or message GUID`);
+      return;
+    }
 
-    if (text.startsWith(this.config.BOT_MESSAGE_PREFIX) || this.state.wasSentByUs(msg.guid)) return;
+    if (text.startsWith(this.config.BOT_MESSAGE_PREFIX) || this.state.wasSentByUs(msg.guid)) {
+      this.log(`[relay] skipped guid=${msg.guid}: bridge echo`);
+      return;
+    }
 
     const payload = {
       guid: msg.guid,
@@ -33,10 +64,11 @@ export class InboundRelay {
       sentAt: msg.created_at ? new Date(msg.created_at).toISOString() : new Date().toISOString(),
     };
 
+    this.log(`[relay] forwarding guid=${msg.guid} to API`);
     this.queue = this.queue.then(() => this.post(payload));
   }
 
-  private async post(payload: unknown, attempt = 0): Promise<void> {
+  private async post(payload: { guid: string }, attempt = 0): Promise<void> {
     try {
       const res = await this.fetchFn(`${this.config.API_URL}/api/ingest/imessage`, {
         method: "POST",
@@ -47,7 +79,20 @@ export class InboundRelay {
         body: JSON.stringify(payload),
       });
       if (!res.ok && res.status >= 500) throw new Error(`ingest ${res.status}`);
-      if (!res.ok) console.error(`[relay] ingest rejected (${res.status}):`, await res.text());
+      const responseText = await res.text();
+      if (!res.ok) {
+        console.error(`[relay] ingest rejected guid=${payload.guid} (${res.status}):`, responseText);
+        return;
+      }
+      let result: { routed?: boolean; invoked?: boolean } = {};
+      try {
+        result = JSON.parse(responseText) as typeof result;
+      } catch {
+        // A successful response without JSON is still accepted.
+      }
+      this.log(
+        `[relay] ingest accepted guid=${payload.guid} routed=${Boolean(result.routed)} invoked=${Boolean(result.invoked)}`
+      );
     } catch (err) {
       if (attempt < 5) {
         const delay = Math.min(1000 * 2 ** attempt, 30_000);
@@ -129,13 +174,16 @@ export class OutboundConsumer {
     }
     if (cmd.type !== "send" || !cmd.id || !cmd.chatGuid || !cmd.text) return;
     try {
-      const body = this.config.BOT_MESSAGE_PREFIX
-        ? `${this.config.BOT_MESSAGE_PREFIX}\n${cmd.text}`
-        : cmd.text;
+      console.log(
+        `[relay] outbound received id=${cmd.id} chat=${cmd.chatGuid} text=${messagePreview(cmd.text)}`
+      );
+      const body = formatBotMessage(this.config.BOT_MESSAGE_PREFIX, cmd.text);
       const result = await this.sendImsg({ chat_guid: cmd.chatGuid, text: body });
       this.state.recordSent(result.guid);
+      console.log(`[relay] outbound sent id=${cmd.id} guid=${result.guid ?? "unknown"}`);
       this.ws?.send(JSON.stringify({ type: "ack", id: cmd.id, ok: true, externalMessageId: result.guid }));
     } catch (err) {
+      console.error(`[relay] outbound failed id=${cmd.id}:`, err instanceof Error ? err.message : err);
       this.ws?.send(
         JSON.stringify({
           type: "ack",

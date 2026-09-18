@@ -8,6 +8,7 @@
     "packages/*"
   ],
   "scripts": {
+    "env:setup": "bun run scripts/setup-env.ts",
     "dev": "bun run scripts/dev.ts",
     "dev:ios": "bun run scripts/dev.ts --no-web",
     "dev:api": "bun --cwd apps/api dev",
@@ -15,6 +16,7 @@
     "dev:desktop": "bun --cwd apps/desktop dev",
     "dev:bridge": "bun --cwd apps/bridge start:local",
     "bridge": "bun --cwd apps/bridge start:interactive",
+    "bridge:dev": "bun --cwd apps/bridge start:local",
     "bridge:local": "bun --cwd apps/bridge start:local",
     "bridge:prod": "bun --cwd apps/bridge start:prod",
     "ios": "bun --cwd apps/desktop ios",
@@ -23,6 +25,12 @@
     "ios:build": "bun --cwd apps/desktop ios:build",
     "ios:init": "bun --cwd apps/desktop ios:init",
     "db:push": "bun --cwd packages/database push",
+    "db:push:neon": "bun run scripts/push-neon-schema.ts",
+    "prod:db": "bun run scripts/push-neon-schema.ts",
+    "prod:up": "bun run scripts/prod.ts up",
+    "prod:secrets": "bun run scripts/prod.ts secrets",
+    "prod:deploy": "bun run scripts/prod.ts deploy",
+    "prod:telnyx": "bun run scripts/prod.ts telnyx",
     "test": "bun test packages apps/api apps/worker apps/bridge apps/desktop/src/lib apps/desktop/src/components/household",
     "typecheck": "bun run --filter '*' typecheck"
   }

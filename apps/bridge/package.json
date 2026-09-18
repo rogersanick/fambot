@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --watch src/index.ts",
-    "start": "bun src/index.ts",
-    "start:local": "bun src/index.ts --target local",
-    "start:prod": "bun src/index.ts --target prod",
+    "dev": "bun --env-file .env --watch src/index.ts",
+    "start": "bun --env-file .env src/index.ts",
+    "start:local": "bun --env-file .env src/index.ts --target local",
+    "start:prod": "bun --env-file .env.prod src/index.ts --target prod",
     "start:interactive": "bun src/index.ts --interactive",
     "typecheck": "tsc --noEmit",
     "test": "bun test src"

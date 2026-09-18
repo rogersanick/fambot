@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { InboundRelay } from "./relay";
+import { formatBotMessage, InboundRelay } from "./relay";
 import { BridgeState } from "./state";
 import type { BridgeConfig } from "./config";
 import type { ImsgMessage } from "./imsg-rpc";
@@ -39,6 +39,19 @@ function capture(responses: Array<number | Error> = [200]) {
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 20));
+
+describe("formatBotMessage", () => {
+  test("makes the automated sender unmistakable", () => {
+    const body = formatBotMessage(config.BOT_MESSAGE_PREFIX, "Trash reminder is set.");
+    expect(body).toStartWith("Fambot says: 🤖✨\n━━━━━━━━━━━━━━━━━━━━\n");
+    expect(body).toContain("Trash reminder is set.");
+    expect(body).toEndWith("Automated message by Fambot.");
+  });
+
+  test("always includes a Fambot banner when the configured prefix is empty", () => {
+    expect(formatBotMessage("", "Done.")).toStartWith("🤖 FAMBOT\n");
+  });
+});
 
 describe("InboundRelay", () => {
   test("forwards inbound messages with auth and normalized payload", async () => {

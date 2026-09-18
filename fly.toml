@@ -1,13 +1,9 @@
 # Fambot on Fly.io: one app, two processes (api + worker), one Neon database.
 #
-# First deploy:
-#   fly launch --no-deploy   (or: fly apps create fambot)
-#   fly secrets set DATABASE_URL=... OPENAI_API_KEY=... BRIDGE_TOKEN=... \
-#     BETTER_AUTH_SECRET=... TOKEN_ENCRYPTION_KEY=... \
-#     GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=...
-#   fly deploy
+#   bun run env:setup
+#   bun run prod:up
 
-app = "fambot"
+app = "fambot-nrogers"
 primary_region = "ewr"
 
 [build]
@@ -19,8 +15,8 @@ primary_region = "ewr"
 
 [env]
   PORT = "8787"
-  API_BASE_URL = "https://fambot.fly.dev"
-  APP_URL = "https://fambot.vercel.app"
+  API_BASE_URL = "https://fambot-nrogers.fly.dev"
+  APP_URL = "https://fambot-desktop.vercel.app"
 
 [http_service]
   processes = ["api"]

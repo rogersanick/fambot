@@ -40,6 +40,20 @@ interface JsonRpcFrame {
   error?: { code?: number; message?: string; data?: unknown };
 }
 
+function rpcErrorMessage(error: NonNullable<JsonRpcFrame["error"]>): string {
+  if (error.code === -32002 || /database unavailable/i.test(error.message ?? "")) {
+    return [
+      "Cannot access the Messages database.",
+      "Grant Full Disk Access to the app running the bridge",
+      "(Cursor when using its integrated terminal), then fully quit and reopen that app.",
+      "System Settings → Privacy & Security → Full Disk Access.",
+    ].join(" ");
+  }
+  const data =
+    typeof error.data === "string" ? ` — ${error.data.split("\n")[0]}` : "";
+  return `imsg rpc error: ${error.message ?? "unknown"} (${error.code ?? "?"})${data}`;
+}
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -171,6 +185,7 @@ export class ImsgRpc {
     const cursor = this.opts.getCursor();
     try {
       await this.request("watch.subscribe", cursor !== null ? { since_rowid: cursor } : {});
+      console.log(`[imsg] inbound watch subscribed (${cursor === null ? "new messages" : `after rowid ${cursor}`})`);
     } catch (err) {
       if (cursor !== null) {
         // Stale cursor (e.g. chat.db was replaced) — fall back to a fresh watch.
@@ -179,6 +194,7 @@ export class ImsgRpc {
           err instanceof Error ? err.message : err,
         );
         await this.request("watch.subscribe", {});
+        console.log("[imsg] inbound watch subscribed (fresh cursor)");
       } else {
         throw err;
       }
@@ -223,10 +239,7 @@ export class ImsgRpc {
       if (frame.error) {
         // imsg puts the actionable text (e.g. Full Disk Access instructions)
         // in error.data — surface it instead of just "Internal error".
-        const data = typeof frame.error.data === "string" ? ` — ${frame.error.data.split("\n")[0]}` : "";
-        pending.reject(
-          new Error(`imsg rpc error: ${frame.error.message ?? "unknown"} (${frame.error.code ?? "?"})${data}`),
-        );
+        pending.reject(new Error(rpcErrorMessage(frame.error)));
       } else {
         pending.resolve(frame.result);
       }

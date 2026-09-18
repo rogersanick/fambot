@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   BridgeAuthError,
+  DEFAULT_PROD_API_URL,
   loginBridge,
   normalizeApiUrl,
   parseCli,
@@ -32,7 +33,7 @@ describe("parseCli", () => {
 describe("resolveApiUrl", () => {
   test("uses local/prod defaults and env/override precedence", () => {
     expect(resolveApiUrl("local", undefined, {})).toBe("http://localhost:8787");
-    expect(resolveApiUrl("prod", undefined, {})).toBe("https://fambot.fly.dev");
+    expect(resolveApiUrl("prod", undefined, {})).toBe(DEFAULT_PROD_API_URL);
     expect(resolveApiUrl("local", undefined, { API_URL: "http://127.0.0.1:8787/" })).toBe(
       "http://127.0.0.1:8787"
     );
@@ -107,7 +108,7 @@ describe("prepareRuntime", () => {
     const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
       const href = String(url);
       if (href.endsWith("/health")) return Response.json({ ok: true, service: "fambot-api" });
-      expect(href).toBe("https://fambot.fly.dev/api/bridge/login");
+      expect(href).toBe(`${DEFAULT_PROD_API_URL}/api/bridge/login`);
       expect(JSON.parse(String(init?.body))).toEqual({
         email: "nick@example.com",
         password: "secret",
@@ -128,7 +129,7 @@ describe("prepareRuntime", () => {
       },
     });
     expect(mode).toBe("prod");
-    expect(config.API_URL).toBe("https://fambot.fly.dev");
+    expect(config.API_URL).toBe(DEFAULT_PROD_API_URL);
     expect(config.BRIDGE_TOKEN).toBe("prod-bridge-token");
     expect(asked.some((label) => /API URL/i.test(label))).toBe(true);
     expect(asked.some((label) => /email/i.test(label))).toBe(true);

@@ -46,31 +46,32 @@ packages/
 | Docker | local Postgres | [OrbStack](https://orbstack.dev) or Docker Desktop |
 | [imsg](https://imsg.sh) | the iMessage relay binary | `brew install steipete/tap/imsg` |
 | OpenAI API key | message interpretation (auth and CRUD still work without it) | [platform.openai.com](https://platform.openai.com/api-keys) |
+| [neonctl](https://neon.com/docs/reference/neon-cli) | `env:setup` / `prod:db` against Neon | `brew install neonctl` then `neonctl auth` |
+| [flyctl](https://fly.io/docs/flyctl/install/) | deploy API + worker | `brew install flyctl` then `fly auth login` |
+| [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) | local inbound SMS only (`bun dev --inbound-sms`) | `brew install cloudflared` |
 | Rust toolchain | native Tauri desktop + iPhone builds | `curl https://sh.rustup.rs \| sh` |
 | Xcode + CocoaPods | iPhone Simulator / device (macOS only) | Mac App Store, then `brew install cocoapods` |
 
-Optional: Google OAuth credentials (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`) enable "Sign in with Google" and Google Calendar sync. Optional: a [Telnyx](https://telnyx.com) account enables SMS notifications (see below). Leave either empty and everything else still works.
+Optional: a [Telnyx](https://telnyx.com) account enables SMS notifications (see below). Sign-in is email/password.
 
-## Local setup
+## Local setup (dev)
 
 ```sh
 git clone <this repo> && cd fambot
 bun install
-
-# 1. Environment
-cp apps/api/.env.example apps/api/.env       # then paste your OPENAI_API_KEY
-cp apps/bridge/.env.example apps/bridge/.env # defaults work for local dev
-
-# 2. Start Postgres, apply the schema, and run every local service
-bun dev
+bun run env:setup    # fills .env / .env.prod for api, worker, bridge, desktop
+bun dev              # Docker Postgres + schema + API + worker + web + bridge→local
 ```
 
-`bun dev` starts/reuses the `fambot-pg` Docker container, applies the current
-schema, and runs the API (8787), worker, web app (5173), and (on macOS with
-`imsg` installed) the iMessage bridge. It creates either `.env` file from its
-example when missing. Set a non-local `DATABASE_URL` to use an existing
-database instead of Docker. Pass `--no-web` to skip Vite, or `--no-bridge` to
-skip the Mac relay (then run `bun bridge:local` or `bun bridge:prod` yourself).
+`bun run env:setup` copies OpenAI/Telnyx keys from any existing `apps/api/.env`, discovers the Telnyx number/profile/public key, fetches the Neon URL via `neonctl`, and generates secrets. Re-run it after changing keys; it will not rotate production secrets that are already set.
+
+`bun dev` starts/reuses the `fambot-pg` Docker container, applies the current schema, and runs the API (8787), worker, web app (5173), and (on macOS with `imsg` installed) the iMessage bridge against the **local** API. Pass `--no-web` to skip Vite, or `--no-bridge` to skip the Mac relay (then run `bun bridge:dev` or `bun bridge:prod` yourself).
+
+Inbound SMS stays pointed at Fly unless you pass `--inbound-sms` (Cloudflare tunnel; this **steals** the Telnyx webhook from production):
+
+```sh
+bun dev --inbound-sms
+```
 
 Open http://localhost:5173, create an account (email/password), name your household, and you're in. Talk to Fambot in the **Chat** tab:
 
@@ -126,26 +127,19 @@ SMS is the default notification channel: reminder fires and task nudges are text
 **One-time Telnyx setup:**
 
 1. Create a [Telnyx](https://telnyx.com) account, buy a US/Canada **long-code** SMS/MMS-capable number, and create a **Messaging Profile** with that number attached. US long-code numbers need 10DLC registration for production traffic. Native group MMS does not support toll-free or short-code senders.
-2. Create an API key (Account Settings → API Keys) and set `TELNYX_API_KEY` in `apps/api/.env`.
-3. Run `bun dev`. When the account has exactly one profile-backed messaging
-   number, the dev command discovers its number, profile, and webhook public
-   key. It starts a Cloudflare quick tunnel (using `cloudflared` when installed,
-   or Docker otherwise) and points that profile's v2 webhook at the local API.
-4. If the account has multiple messaging numbers, also set
-   `TELNYX_FROM_NUMBER`; `TELNYX_MESSAGING_PROFILE_ID` and
-   `TELNYX_PUBLIC_KEY` remain available as explicit overrides.
+2. Create an API key (Account Settings → API Keys) and put `TELNYX_API_KEY` in `apps/api/.env`, then `bun run env:setup`. That fills number, profile id, and webhook public key in both dev and prod env files.
+3. Production inbound SMS: `bun run prod:telnyx` (or `bun run prod:up`) points the profile webhook at `https://fambot-nrogers.fly.dev/api/webhooks/telnyx`.
+4. Local inbound SMS is opt-in: `bun dev --inbound-sms` starts a Cloudflare tunnel and **replaces** that webhook until you run `bun run prod:telnyx` again. Outbound SMS from the local worker does not need a tunnel.
+
+If the account has multiple messaging numbers, set `TELNYX_FROM_NUMBER` in `apps/api/.env` before `env:setup`.
 
 Household group texting uses Telnyx group MMS: US/Canada `+1` wireless numbers only, up to 8 household recipients, billed as MMS per recipient. A direct member text is valid input, but Fambot replies in the native household group when at least two members have phone identities.
 
 ## Household invitations
 
-Only the household owner can invite a member. **Settings → Members → Invite member** creates a phone-linked pending member and sends a one-time account setup link by SMS. The link expires after 7 days; the owner can resend (which invalidates the old link) or cancel it. Recipients use the existing email/password or Google sign-in, then accept the invite to link their account. An account can belong to one household.
+Only the household owner can invite a member. **Settings → Members → Invite member** creates a phone-linked pending member and sends a one-time account setup link by SMS. The link expires after 7 days; the owner can resend (which invalidates the old link) or cancel it. Recipients use email/password sign-in, then accept the invite to link their account. An account can belong to one household.
 
-Enable/disable the channel per household in the app under **Connections**.
-Each quick-tunnel run updates the selected profile's webhook URL. To use a
-stable tunnel instead, set `TELNYX_WEBHOOK_URL=https://your-tunnel.example`;
-the command registers that URL and does not launch a quick tunnel. Outbound
-sends work without a tunnel, but delivery receipts and inbound replies do not.
+Enable/disable the channel per household in the app under **Connections**. Outbound sends work without a public webhook; delivery receipts and inbound replies need the Fly URL (prod) or `bun dev --inbound-sms` (local).
 
 ## iMessage bridge
 
@@ -155,15 +149,15 @@ The bridge is a dumb relay on your Mac: it tails Messages via `imsg rpc`, POSTs 
 - **Full Disk Access** (to read the Messages database) — System Settings → Privacy & Security → Full Disk Access
 - **Automation → Messages** (to send) — approve the prompt on first send
 
-The bridge starts as part of `bun dev` using `BRIDGE_TOKEN` from env (no prompt). To run it by itself as a household owner — locally or against the deployed API:
+The bridge starts as part of `bun dev` using `BRIDGE_TOKEN` from the local env (no prompt). To run it by itself as a household owner — locally or against the deployed API:
 
 ```sh
 bun bridge            # asks local vs prod, then email/password
-bun bridge:local      # ping http://localhost:8787, then sign in
-bun bridge:prod       # asks for the deployed API URL, pings it, then sign in
+bun bridge:dev        # ping http://localhost:8787, then sign in (`bridge:local` is an alias)
+bun bridge:prod       # ping https://fambot-nrogers.fly.dev, then sign in
 ```
 
-Only a household owner can authenticate. The CLI pings `/health` and checks that the host is a Fambot API before asking for a password. `bun bridge:prod` suggests `PROD_API_URL` (default `https://fambot.fly.dev`) and lets you override it. Don't run `bun bridge:prod` alongside `bun dev`'s local bridge — one Mac should relay to one API. Use `bun dev --no-bridge` if you want the local API/web without starting the relay.
+Only a household owner can authenticate. The CLI pings `/health` and checks that the host is a Fambot API before asking for a password. Don't run `bun bridge:prod` alongside `bun dev`'s local bridge — one Mac should relay to one API. Use `bun dev --no-bridge` if you want the local API/web without starting the relay.
 
 **Link your iMessage identity.** The API only routes texts whose sender matches a household member's iMessage handle (phone or Apple ID email). In the app: **Settings → household members → add member with iMessage handle**, or when you invite family members include their phone/email handle. Unknown senders are ignored (logged by the API). Messages you send from the bridge Mac are forwarded like anyone else's; the bridge drops only its own echoes (the outbound prefix, or a GUID it just sent).
 
@@ -171,30 +165,33 @@ Only a household owner can authenticate. The CLI pings `/health` and checks that
 
 | Var | Default | Meaning |
 |---|---|---|
-| `API_URL` | `http://localhost:8787` | local API (`bun dev` and `bun bridge:local`) |
-| `PROD_API_URL` | `https://fambot.fly.dev` | deployed API (`bun bridge:prod`) |
-| `BRIDGE_TOKEN` | `dev-bridge-token` | used by `bun dev`; interactive commands fetch this after owner login |
+| `API_URL` | `http://localhost:8787` | local API (`bun dev` and `bun bridge:dev`) |
+| `PROD_API_URL` | `https://fambot-nrogers.fly.dev` | deployed API (`bun bridge:prod`) |
+| `BRIDGE_TOKEN` | generated | must match the target API (`apps/api/.env` or `.env.prod`) |
 | `BRIDGE_EMAIL` / `BRIDGE_PASSWORD` | | optional non-interactive login for `bun bridge:*` |
 | `IMSG_BIN` | `imsg` | path to the imsg binary |
-| `BOT_MESSAGE_PREFIX` | `Fambot says: 🤖✨` | prefix on outbound sends (also the echo filter) |
-| `STATE_PATH` | `./data/state.json` | replay cursor + sent-message GUIDs |
+| `BOT_MESSAGE_PREFIX` | `Fambot says: 🤖✨` | outbound banner and echo filter; bridge replies also include an automated-message disclaimer |
+| `STATE_PATH` | `./data/state.json` | replay cursor (`./data/state-prod.json` on prod) |
 
-## Environment reference (`apps/api/.env`)
+## Environment reference
+
+`bun run env:setup` writes these. Do not copy `apps/api/.env` to Fly — that URL is local Docker Postgres.
 
 | Var | Required | Meaning |
 |---|---|---|
-| `DATABASE_URL` | ✔ | Postgres connection string |
+| `DATABASE_URL` | ✔ | Postgres (Docker on dev, Neon pooled on prod) |
 | `OPENAI_API_KEY` | For chat | interpretation model key; without it AI-backed chat returns `503` |
 | `OPENAI_MODEL` | | default `gpt-5-mini` |
-| `BRIDGE_TOKEN` | ✔ | shared secret with the Mac bridge |
-| `BETTER_AUTH_SECRET` | ✔ | session signing (change in prod) |
-| `TOKEN_ENCRYPTION_KEY` | ✔ | AES-GCM key for stored Google tokens |
-| `API_BASE_URL` / `APP_URL` | ✔ | own origin / web app origin (CORS + OAuth redirects) |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | | enables Google sign-in + Calendar |
+| `BRIDGE_TOKEN` | ✔ | shared secret with the Mac bridge (different in dev vs prod) |
+| `BETTER_AUTH_SECRET` | ✔ | session signing |
+| `MCP_SIGNING_SECRET` | ✔ | signs delegated `/mcp` tokens |
+| `TOKEN_ENCRYPTION_KEY` | ✔ | AES-GCM key (unused until calendar OAuth exists) |
+| `API_BASE_URL` / `APP_URL` | ✔ | API origin / web app origin (CORS) |
 | `TELNYX_API_KEY` / `TELNYX_FROM_NUMBER` | For SMS | enables the default SMS notification channel |
-| `TELNYX_PUBLIC_KEY` | For SMS webhooks | verifies Telnyx webhook signatures (delivery receipts + inbound texts) |
-| `TELNYX_MESSAGING_PROFILE_ID` | | pins sends and selects the profile whose webhook is updated in dev |
-| `TELNYX_WEBHOOK_URL` | | stable public dev URL; otherwise `bun dev` creates a quick tunnel |
+| `TELNYX_PUBLIC_KEY` | For SMS webhooks | verifies Telnyx webhook signatures |
+| `TELNYX_MESSAGING_PROFILE_ID` | | pins sends and selects the webhook profile |
+
+Worker env files only need `DATABASE_URL`, `TELNYX_*`, and `WORKER_POLL_MS`. Desktop prod build uses `VITE_API_URL=https://fambot-nrogers.fly.dev` in `apps/desktop/.env.prod`.
 
 ## Tests & typecheck
 
@@ -203,18 +200,34 @@ bun test           # unit tests across all workspaces
 bun run typecheck  # tsc --noEmit in every workspace
 ```
 
-## Deploy
+## Dev vs prod commands
 
-- **Postgres**: [Neon](https://neon.tech) — put the connection string in `DATABASE_URL`.
-- **API + worker**: [Fly.io](https://fly.io) — one app, two processes (`fly.toml` + `Dockerfile` are ready):
-  ```sh
-  fly launch --no-deploy
-  fly secrets set DATABASE_URL=... OPENAI_API_KEY=... BRIDGE_TOKEN=... \
-    BETTER_AUTH_SECRET=... TOKEN_ENCRYPTION_KEY=... \
-    TELNYX_API_KEY=... TELNYX_PUBLIC_KEY=... TELNYX_FROM_NUMBER=... \
-    API_BASE_URL=https://<app>.fly.dev APP_URL=https://<vercel-domain>
-  fly deploy
-  ```
-  Then point your Telnyx messaging profile's webhook at `https://<app>.fly.dev/api/webhooks/telnyx`.
-- **Web app**: Vercel — deploy `apps/desktop` (`vercel.json` included) with `VITE_API_URL` pointing at Fly.
-- **Bridge**: runs on your Mac; `deploy/launchd/app.fambot.bridge.plist` keeps it alive as a launchd agent.
+| What | Dev (local) | Prod (cloud) |
+|---|---|---|
+| Fill env files | `bun run env:setup` | same |
+| Schema | `bun run db:push` (via `bun dev`) | `bun run prod:db` |
+| Run / deploy | `bun dev` | `bun run prod:up` |
+| API only | `bun run dev:api` | Fly `api` process |
+| Worker only | `bun run dev:worker` | Fly `worker` process |
+| Web | Vite on :5173 | Vercel (`apps/desktop`) |
+| Bridge | `bun bridge:dev` | `bun bridge:prod` |
+| Secrets | `apps/*/.env` | `bun run prod:secrets` |
+| Telnyx webhook | `bun dev --inbound-sms` | `bun run prod:telnyx` |
+
+Split prod commands (after `env:setup`): `prod:secrets`, `prod:deploy`, `prod:telnyx`. `prod:up` creates the Fly app if missing, imports secrets, deploys, starts a worker if needed, and points Telnyx at Fly.
+
+## Deploy (prod)
+
+```sh
+bun run env:setup    # if not already
+bun run prod:db      # schema → Neon (unpooled)
+bun run prod:up      # create Fly app if missing, secrets, deploy, scale, Telnyx → Fly
+bun run bridge:prod  # Mac bridge → https://fambot-nrogers.fly.dev
+```
+
+- **Postgres**: [Neon](https://neon.tech) project `fambot`. `env:setup` writes the pooled URL into `.env.prod` / `.env.fly`.
+- **API + worker**: [Fly.io](https://fly.io) app `fambot-nrogers` (`fly.toml` + `Dockerfile`; global name `fambot` was taken). Non-secret `PORT`, `API_BASE_URL`, and `APP_URL` live in `fly.toml`.
+- **Web app**: [Vercel](https://vercel.com) — create/link a project with root `apps/desktop`. `VITE_API_URL` is in committed `apps/desktop/.env.prod`. If the production hostname is not `https://fambot-desktop.vercel.app`, change `APP_URL` in `fly.toml` and `bun run prod:deploy`.
+- **Bridge**: still on your Mac; `deploy/launchd/app.fambot.bridge.plist` can keep `bridge:prod` alive.
+
+You still do by hand: the Vercel project, the first household owner account (email/password on the prod web app), `cloudflared` only if you want local inbound SMS, and Fly billing if `fly apps create fambot` is rejected.
