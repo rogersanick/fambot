@@ -213,11 +213,16 @@ async function sendInviteSms(args: {
   inviterName: string;
   householdName: string;
 }) {
+  if (!telnyxChannel) {
+    const message = "SMS is not configured. Copy the invite link and send it manually.";
+    await markInviteSms(db, args.inviteId, { status: "failed", error: message });
+    return { smsStatus: "failed" as const, sendError: message };
+  }
   try {
     // Keep the bearer token in the URL fragment so browsers never send it to
     // the SPA host in request logs or referrer headers.
-    const link = `${env.APP_URL.replace(/\/$/, "")}/#invite=${encodeURIComponent(args.token)}`;
-    const { providerMessageId } = await telnyxChannel!.sendSms({
+    const link = inviteLink(args.token);
+    const { providerMessageId } = await telnyxChannel.sendSms({
       to: args.phone,
       text: `${args.inviterName} invited you to join ${args.householdName} on Fambot. Set up your account: ${link}`,
     });
@@ -231,7 +236,6 @@ async function sendInviteSms(args: {
 }
 
 api.post("/households/:hid/invites", async (c) => {
-  if (!telnyxChannel) return c.json(SMS_NOT_CONFIGURED, 503);
   const user = c.get("user");
   const hid = c.req.param("hid");
   const me = await requireMember(user.id, hid);
@@ -286,6 +290,10 @@ api.post("/households/:hid/invites", async (c) => {
     201
   );
 });
+
+function inviteLink(token: string): string {
+  return `${env.APP_URL.replace(/\/$/, "")}/#invite=${encodeURIComponent(token)}`;
+}
 
 const InviteTokenSchema = z.object({ token: z.string().min(20).max(200) });
 
@@ -345,6 +353,25 @@ api.post("/households/:hid/invites/:iid/resend", async (c) => {
       expiresAt: rotated.invite.expiresAt.toISOString(),
       ...delivery,
     },
+  });
+});
+
+api.post("/households/:hid/invites/:iid/link", async (c) => {
+  const hid = c.req.param("hid");
+  const me = await requireMember(c.get("user").id, hid);
+  if (!me) return c.json({ error: "forbidden" }, 403);
+  if (me.role !== "owner") return c.json({ error: "owner_only" }, 403);
+  const [row] = await db
+    .select({ invite: householdInvites })
+    .from(householdInvites)
+    .innerJoin(members, eq(householdInvites.memberId, members.id))
+    .where(and(eq(householdInvites.id, c.req.param("iid")), eq(members.householdId, hid)));
+  if (!row) return c.json({ error: "invite_not_found" }, 404);
+  const rotated = await rotateInviteToken(db, row.invite.id);
+  if (!rotated) return c.json({ error: "invite_already_accepted" }, 409);
+  return c.json({
+    url: inviteLink(rotated.token),
+    expiresAt: rotated.invite.expiresAt.toISOString(),
   });
 });
 

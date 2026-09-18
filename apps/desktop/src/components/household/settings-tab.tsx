@@ -153,6 +153,7 @@ function MemberIdentityRow({
   const [usePhoneForImessage, setUsePhoneForImessage] = useState(
     Boolean(member.phone && member.handle === member.phone)
   );
+  const [manualInviteLink, setManualInviteLink] = useState<string | null>(null);
   const action = useAction(householdId);
 
   return (
@@ -182,6 +183,30 @@ function MemberIdentityRow({
         )}
         {isOwner && member.invite && member.invite.state !== "accepted" && (
           <>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={action.pending}
+              onClick={() => {
+                let copied = false;
+                void action
+                  .run(async () => {
+                    const result = await api.createInviteLink(householdId, member.invite!.id);
+                    setManualInviteLink(result.url);
+                    if (navigator.clipboard) {
+                      await navigator.clipboard.writeText(result.url);
+                      copied = true;
+                    }
+                  })
+                  .then((ok) => {
+                    if (ok) {
+                      toast.success(copied ? "Invite link copied" : "Invite link ready below");
+                    }
+                  });
+              }}
+            >
+              Copy invite link
+            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -221,6 +246,22 @@ function MemberIdentityRow({
           </Button>
         )}
       </div>
+      {manualInviteLink && (
+        <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+          <Input aria-label={`Invite link for ${member.display_name}`} value={manualInviteLink} readOnly />
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() =>
+              void navigator.clipboard.writeText(manualInviteLink).then(() => {
+                toast.success("Invite link copied");
+              })
+            }
+          >
+            Copy
+          </Button>
+        </div>
+      )}
       {editing && (
         <form
           onSubmit={(e) => {

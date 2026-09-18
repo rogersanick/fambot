@@ -234,6 +234,10 @@ export const api = {
     req<{ invite: HouseholdInvite }>(`/households/${hid}/invites/${inviteId}/resend`, {
       method: "POST",
     }),
+  createInviteLink: (hid: string, inviteId: string) =>
+    req<{ url: string; expiresAt: string }>(`/households/${hid}/invites/${inviteId}/link`, {
+      method: "POST",
+    }),
   cancelInvite: (hid: string, inviteId: string) =>
     req<{ ok: true }>(`/households/${hid}/invites/${inviteId}`, { method: "DELETE" }),
   setMemberPhone: (hid: string, mid: string, phone: string) =>
