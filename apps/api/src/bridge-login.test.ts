@@ -61,20 +61,24 @@ describe("POST /api/bridge/login (integration)", () => {
       .insert(households)
       .values({ name: `bridge-${randomUUID().slice(0, 8)}` })
       .returning();
-    await db.insert(members).values([
-      {
-        householdId: household!.id,
-        userId: owner.user.id,
-        displayName: "Owner",
-        role: "owner",
-      },
-      {
-        householdId: household!.id,
-        userId: extra.user.id,
-        displayName: "Member",
-        role: "member",
-      },
-    ]);
+    const insertedMembers = await db
+      .insert(members)
+      .values([
+        {
+          householdId: household!.id,
+          userId: owner.user.id,
+          displayName: "Owner",
+          role: "owner",
+        },
+        {
+          householdId: household!.id,
+          userId: extra.user.id,
+          displayName: "Member",
+          role: "member",
+        },
+      ])
+      .returning();
+    const ownerMember = insertedMembers.find((member) => member.userId === owner.user.id)!;
 
     const memberLogin = await fetch(`${baseUrl}/api/bridge/login`, {
       method: "POST",
@@ -89,8 +93,13 @@ describe("POST /api/bridge/login (integration)", () => {
       body: JSON.stringify({ username: ownerEmail, password }),
     });
     expect(ownerLogin.status).toBe(200);
-    const body = (await ownerLogin.json()) as { token: string; user: { email: string } };
+    const body = (await ownerLogin.json()) as {
+      token: string;
+      memberId: string;
+      user: { email: string };
+    };
     expect(body.token).toBe(env.BRIDGE_TOKEN);
+    expect(body.memberId).toBe(ownerMember.id);
     expect(body.user.email).toBe(ownerEmail);
 
     await db.delete(members).where(eq(members.householdId, household!.id));

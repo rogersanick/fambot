@@ -254,18 +254,33 @@ async function resolveConversation(inbound: InboundMessage) {
     .from(conversations)
     .where(and(eq(conversations.channel, "imessage"), eq(conversations.externalId, inbound.conversationExternalId)));
 
-  // Sender identity → member
-  const [identity] = await db
-    .select({ memberId: identities.memberId })
-    .from(identities)
-    .where(and(eq(identities.type, "imessage"), eq(identities.value, inbound.sender.externalId)));
-  const senderMember = identity
-    ? (await db.select().from(members).where(eq(members.id, identity.memberId)))[0] ?? null
+  // Messages authored on the bridge Mac use the owner identity established
+  // during bridge login. imsg reports the DM recipient as `sender` for these
+  // from-me messages, so handle lookup would attribute them incorrectly.
+  let senderMember = inbound.sender.memberId
+    ? (await db.select().from(members).where(eq(members.id, inbound.sender.memberId)))[0] ?? null
     : null;
+  if (!senderMember) {
+    const [identity] = await db
+      .select({ memberId: identities.memberId })
+      .from(identities)
+      .where(and(eq(identities.type, "imessage"), eq(identities.value, inbound.sender.externalId)));
+    senderMember = identity
+      ? (await db.select().from(members).where(eq(members.id, identity.memberId)))[0] ?? null
+      : null;
+  }
 
   if (existing) {
     const [household] = await db.select().from(households).where(eq(households.id, existing.householdId));
     if (!household) return null;
+    if (!senderMember) {
+      console.warn(`[pipeline] ignoring message from unknown iMessage handle ${inbound.sender.externalId}`);
+      return null;
+    }
+    if (senderMember.householdId !== household.id) {
+      console.warn("[pipeline] ignoring iMessage sender from a different household");
+      return null;
+    }
     return { conversation: existing, household, senderMember };
   }
 

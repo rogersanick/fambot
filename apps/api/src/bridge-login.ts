@@ -50,6 +50,7 @@ export async function authenticateBridgeOwner(email: string, password: string) {
   return {
     ok: true as const,
     token: env.BRIDGE_TOKEN,
+    memberId: owner.id,
     user: { name: user.name, email: user.email },
   };
 }
@@ -62,5 +63,5 @@ bridgeLogin.post("/api/bridge/login", async (c) => {
   const email = (parsed.data.email ?? parsed.data.username ?? "").trim();
   const result = await authenticateBridgeOwner(email, parsed.data.password);
   if (!result.ok) return c.json({ error: result.error }, result.status);
-  return c.json({ token: result.token, user: result.user });
+  return c.json({ token: result.token, memberId: result.memberId, user: result.user });
 });

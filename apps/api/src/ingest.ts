@@ -16,6 +16,7 @@ const IngestSchema = z.object({
   text: z.string(),
   senderHandle: z.string().min(1),
   senderName: z.string().optional(),
+  senderMemberId: z.string().uuid().optional(),
   isGroup: z.boolean().default(false),
   sentAt: z.string().datetime({ offset: true }).optional(),
 });
@@ -34,7 +35,11 @@ ingest.post("/api/ingest/imessage", async (c) => {
     channel: "imessage",
     externalMessageId: body.guid,
     conversationExternalId: body.chatGuid,
-    sender: { externalId: body.senderHandle, displayName: body.senderName },
+    sender: {
+      externalId: body.senderHandle,
+      displayName: body.senderName,
+      memberId: body.senderMemberId,
+    },
     text: body.text,
     sentAt: body.sentAt ?? new Date().toISOString(),
     context: {

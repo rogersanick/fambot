@@ -60,6 +60,7 @@ export class InboundRelay {
       text,
       senderHandle: msg.sender ?? "unknown",
       senderName: msg.sender_name,
+      senderMemberId: msg.is_from_me ? this.config.BRIDGE_MEMBER_ID : undefined,
       isGroup: msg.chat_guid.includes(";+;"),
       sentAt: msg.created_at ? new Date(msg.created_at).toISOString() : new Date().toISOString(),
     };

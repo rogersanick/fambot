@@ -17,6 +17,8 @@ export type InboundMessage = {
     /** Channel-native sender identity (imsg handle, or member id for app chat). */
     externalId: string;
     displayName?: string;
+    /** Authenticated member override for messages authored by the bridge owner. */
+    memberId?: string;
   };
   /** E.164 participants supplied by a native group-message webhook. */
   participantExternalIds?: string[];

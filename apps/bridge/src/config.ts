@@ -7,6 +7,7 @@ import { z } from "zod";
 const ConfigSchema = z.object({
   API_URL: z.string().default("http://localhost:8787"),
   BRIDGE_TOKEN: z.string().default("dev-bridge-token"),
+  BRIDGE_MEMBER_ID: z.string().uuid().optional(),
   IMSG_BIN: z.string().default("imsg"),
   BOT_MESSAGE_PREFIX: z.string().default("Fambot says: 🤖✨"),
   STATE_PATH: z.string().default("./data/state.json"),

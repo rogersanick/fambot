@@ -7,6 +7,7 @@ import type { ImsgMessage } from "./imsg-rpc";
 const config: BridgeConfig = {
   API_URL: "http://api.test",
   BRIDGE_TOKEN: "tok",
+  BRIDGE_MEMBER_ID: "11111111-1111-4111-8111-111111111111",
   IMSG_BIN: "imsg",
   BOT_MESSAGE_PREFIX: "Fambot says: 🤖✨",
   STATE_PATH: `/tmp/fambot-relay-test-${Date.now()}.json`,
@@ -80,7 +81,11 @@ describe("InboundRelay", () => {
     relay.handle(msg({ is_from_me: true, guid: "ledger1", text: "un-prefixed but in sent ledger" }));
     await flush();
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.body).toMatchObject({ guid: "self1", senderHandle: "+15551234567" });
+    expect(calls[0]!.body).toMatchObject({
+      guid: "self1",
+      senderHandle: "+15551234567",
+      senderMemberId: config.BRIDGE_MEMBER_ID,
+    });
   });
 
   test("skips empty texts and DMs are not groups", async () => {

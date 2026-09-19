@@ -107,7 +107,7 @@ export async function loginBridge(
   email: string,
   password: string,
   fetchFn: typeof fetch = fetch
-): Promise<{ token: string; user: { name: string; email: string } }> {
+): Promise<{ token: string; memberId: string; user: { name: string; email: string } }> {
   const res = await fetchFn(`${apiUrl}/api/bridge/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -118,11 +118,15 @@ export async function loginBridge(
     throw new BridgeAuthError("Only a household owner can run the iMessage bridge.", 403);
   }
   if (!res.ok) throw new BridgeAuthError(`Login failed (${res.status}).`, res.status);
-  const body = (await res.json()) as { token?: string; user?: { name: string; email: string } };
-  if (!body.token || !body.user?.email) {
-    throw new BridgeAuthError("Login response was missing a token.");
+  const body = (await res.json()) as {
+    token?: string;
+    memberId?: string;
+    user?: { name: string; email: string };
+  };
+  if (!body.token || !body.memberId || !body.user?.email) {
+    throw new BridgeAuthError("Login response was missing bridge identity data.");
   }
-  return { token: body.token, user: body.user };
+  return { token: body.token, memberId: body.memberId, user: body.user };
 }
 
 export async function promptLine(label: string): Promise<string> {
@@ -218,7 +222,12 @@ export async function prepareRuntime(
   const session = await loginBridge(apiUrl, email, password, fetchFn);
   log(`[bridge] signed in as ${session.user.email}`);
   return {
-    config: { ...config, API_URL: apiUrl, BRIDGE_TOKEN: session.token },
+    config: {
+      ...config,
+      API_URL: apiUrl,
+      BRIDGE_TOKEN: session.token,
+      BRIDGE_MEMBER_ID: session.memberId,
+    },
     mode: target,
   };
 }

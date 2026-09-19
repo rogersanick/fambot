@@ -113,7 +113,11 @@ describe("prepareRuntime", () => {
         email: "nick@example.com",
         password: "secret",
       });
-      return Response.json({ token: "prod-bridge-token", user: { name: "Nick", email: "nick@example.com" } });
+      return Response.json({
+        token: "prod-bridge-token",
+        memberId: "11111111-1111-4111-8111-111111111111",
+        user: { name: "Nick", email: "nick@example.com" },
+      });
     }) as typeof fetch;
 
     const { config, mode } = await prepareRuntime(["--target", "prod"], {}, {
@@ -131,6 +135,7 @@ describe("prepareRuntime", () => {
     expect(mode).toBe("prod");
     expect(config.API_URL).toBe(DEFAULT_PROD_API_URL);
     expect(config.BRIDGE_TOKEN).toBe("prod-bridge-token");
+    expect(config.BRIDGE_MEMBER_ID).toBe("11111111-1111-4111-8111-111111111111");
     expect(asked.some((label) => /API URL/i.test(label))).toBe(true);
     expect(asked.some((label) => /email/i.test(label))).toBe(true);
   });
