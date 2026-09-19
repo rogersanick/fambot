@@ -113,7 +113,7 @@ export function OverviewTab({
   week,
   timeline,
 }: OverviewTabProps) {
-  const hasTasks = taskChartData.some((d) => d.open + d.done > 0);
+  const hasTasks = taskChartData.some((d) => d.open + d.doneThisWeek > 0);
   /** Day key selected in "The week ahead"; null = show the whole week. */
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const selected = selectedDay ? week.find((d) => d.key === selectedDay) : undefined;
@@ -154,7 +154,7 @@ export function OverviewTab({
             {hasTasks ? (
               <TaskChart data={taskChartData} />
             ) : (
-              <RobotEmptyState caption="No tasks yet — plant one." />
+              <RobotEmptyState caption="Nothing on anyone's plate — plant a task." />
             )}
           </CardContent>
         </Card>

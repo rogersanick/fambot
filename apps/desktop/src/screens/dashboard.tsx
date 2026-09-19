@@ -122,16 +122,39 @@ export function Dashboard({ householdId }: { householdId: string }) {
     }
     const doneThisWeek = completionSpark.reduce((a, b) => a + b, 0);
 
-    const byAssignee = new Map<string, { open: number; done: number }>();
+    // "Who's carrying the load": every member (even at zero, so imbalance is
+    // visible), plus an Unassigned bucket only when it has something in it.
+    const UNASSIGNED = "Unassigned";
+    const load = new Map<string, { open: number; overdue: number; doneThisWeek: number }>();
+    for (const m of members) load.set(m.display_name, { open: 0, overdue: 0, doneThisWeek: 0 });
     for (const t of allTasks) {
-      if (t.status === "cancelled") continue;
-      const name = t.assignee?.display_name ?? "Anyone";
-      if (!byAssignee.has(name)) byAssignee.set(name, { open: 0, done: 0 });
-      byAssignee.get(name)![t.status === "done" ? "done" : "open"]++;
+      const name = t.assignee?.display_name ?? UNASSIGNED;
+      if (!load.has(name)) load.set(name, { open: 0, overdue: 0, doneThisWeek: 0 });
+      const row = load.get(name)!;
+      if (t.status === "open") {
+        row.open++;
+        if (isOverdue(t.due_at, now)) row.overdue++;
+      } else if (
+        t.status === "done" &&
+        t.completed_at &&
+        pastDayIndex.has(localDate(new Date(t.completed_at), tz))
+      ) {
+        row.doneThisWeek++;
+      }
     }
-    const taskChartData: TaskChartDatum[] = [...byAssignee.entries()]
-      .map(([assignee, counts]) => ({ assignee, ...counts }))
-      .sort((a, b) => b.open + b.done - (a.open + a.done));
+    const taskChartData: TaskChartDatum[] = [...load.entries()]
+      .map(([assignee, counts]) => ({
+        assignee,
+        ...counts,
+        unassigned: assignee === UNASSIGNED || undefined,
+      }))
+      .filter((d) => !(d.unassigned && d.open + d.doneThisWeek === 0))
+      .sort(
+        (a, b) =>
+          Number(a.unassigned ?? false) - Number(b.unassigned ?? false) ||
+          b.open - a.open ||
+          b.doneThisWeek - a.doneThisWeek
+      );
 
     const weekEnd = now.getTime() + 7 * DAY_MS;
     const weekDays = new Set(weekKeys);
