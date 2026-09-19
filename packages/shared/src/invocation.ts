@@ -34,13 +34,20 @@ export class InvocationMatcher {
 
 /**
  * Deterministic trigger detection (design doc §9). Never LLM-based.
- * DMs and app chat always invoke; groups require a mention or a reply to the bot.
+ *
+ * iMessage always requires an explicit @tag (or a reply to the bot), even in
+ * DMs: the Mac bridge relays the owner's entire personal Messages stream, so
+ * a direct text to the owner is not inherently addressed to Fambot.
+ *
+ * SMS and app chat DMs always invoke — texting the Fambot number or typing in
+ * the app's chat tab is unambiguously talking to the bot. Groups on every
+ * channel require a mention or a reply to the bot.
  */
 export function shouldInvokeAssistant(message: InboundMessage): boolean {
-  if (!message.context.isGroup) return true;
   if (message.context.botWasMentioned) return true;
   if (message.context.isReplyToBot) return true;
-  return false;
+  if (message.channel === "imessage") return false;
+  return !message.context.isGroup;
 }
 
 function escapeRegExp(s: string): string {

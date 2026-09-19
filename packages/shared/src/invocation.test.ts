@@ -46,7 +46,43 @@ describe("shouldInvokeAssistant", () => {
     ).toBe(true);
   });
 
-  test("DM always invokes", () => {
-    expect(shouldInvokeAssistant({ ...base, context: { ...base.context, isGroup: false } })).toBe(true);
+  test("iMessage DM without a tag stays silent", () => {
+    expect(shouldInvokeAssistant({ ...base, context: { ...base.context, isGroup: false } })).toBe(false);
+  });
+
+  test("iMessage DM with a tag or a reply to the bot invokes", () => {
+    expect(
+      shouldInvokeAssistant({
+        ...base,
+        context: { isGroup: false, botWasMentioned: true, isReplyToBot: false },
+      })
+    ).toBe(true);
+    expect(
+      shouldInvokeAssistant({
+        ...base,
+        context: { isGroup: false, botWasMentioned: false, isReplyToBot: true },
+      })
+    ).toBe(true);
+  });
+
+  test("SMS and app chat DMs always invoke", () => {
+    expect(
+      shouldInvokeAssistant({
+        ...base,
+        channel: "sms",
+        context: { ...base.context, isGroup: false },
+      })
+    ).toBe(true);
+    expect(
+      shouldInvokeAssistant({
+        ...base,
+        channel: "app_chat",
+        context: { ...base.context, isGroup: false },
+      })
+    ).toBe(true);
+  });
+
+  test("SMS group without mention stays silent", () => {
+    expect(shouldInvokeAssistant({ ...base, channel: "sms" })).toBe(false);
   });
 });
