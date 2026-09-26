@@ -2,9 +2,6 @@ import type { ImsgMessage } from "./imsg-rpc";
 import type { BridgeState } from "./state";
 import type { BridgeConfig } from "./config";
 
-const BOT_MESSAGE_DISCLAIMER =
-  "Automated message by Fambot.";
-
 function messagePreview(text: string | undefined): string {
   if (!text) return "<no text>";
   const oneLine = text.replace(/\s+/g, " ").trim();
@@ -12,12 +9,13 @@ function messagePreview(text: string | undefined): string {
 }
 
 export function formatBotMessage(prefix: string, text: string): string {
-  const banner = prefix.trim() || "🤖 FAMBOT";
-  return `${banner}
+  // Keep the prefix configurable, but normalize the old decorated default so
+  // existing .env files do not produce a doubled colon or duplicate emoji.
+  const header =
+    prefix.trim().replace(/:\s*🤖✨\s*$/, "") || "Fambot says";
+  return `${header}: 🤖✨
 ━━━━━━━━━━━━━━━━━━━━
-${text.trim()}
-━━━━━━━━━━━━━━━━━━━━
-${BOT_MESSAGE_DISCLAIMER}`;
+${text.trim()}`;
 }
 
 /**

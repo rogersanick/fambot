@@ -8,7 +8,9 @@
  * missing secrets. Google OAuth is omitted (email/password only).
  */
 import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { homedir } from "node:os";
 import { prodApiUrl } from "./lib/fly-app";
 import { keepOrGenerate, readEnvFile, writeEnvFile } from "./lib/env-file";
 import { describePostgresUrl, neonConnectionString, resolveNeonProject } from "./lib/neon";
@@ -98,6 +100,32 @@ async function main() {
 
   if (!openaiKey) log("OPENAI_API_KEY not set — chat will return 503 until you add one");
 
+  // APNs (iOS app push). Set APNS_TEAM_ID / APNS_KEY_ID and either paste the
+  // .p8 as APNS_PRIVATE_KEY (base64 ok) or point APNS_PRIVATE_KEY_PATH at the
+  // downloaded key; the path is resolved and inlined as base64 so the same
+  // value works locally and as a Fly secret. Never commit the .p8.
+  const apns = {
+    teamId: api.APNS_TEAM_ID || apiProd.APNS_TEAM_ID || "",
+    keyId: api.APNS_KEY_ID || apiProd.APNS_KEY_ID || "",
+    bundleId: api.APNS_BUNDLE_ID || apiProd.APNS_BUNDLE_ID || "app.fambot.desktop",
+    privateKey: api.APNS_PRIVATE_KEY || apiProd.APNS_PRIVATE_KEY || "",
+    privateKeyPath: api.APNS_PRIVATE_KEY_PATH || apiProd.APNS_PRIVATE_KEY_PATH || "",
+  };
+  if (apns.privateKeyPath) {
+    const keyPath = apns.privateKeyPath.replace(/^~(?=\/|$)/, homedir());
+    if (existsSync(keyPath)) {
+      apns.privateKey = Buffer.from(readFileSync(keyPath, "utf8"), "utf8").toString("base64");
+      log(`APNs key loaded from ${apns.privateKeyPath}`);
+    } else {
+      log(`APNS_PRIVATE_KEY_PATH ${apns.privateKeyPath} does not exist — push vars left as-is`);
+    }
+  }
+  if (apns.teamId && apns.keyId && apns.privateKey) {
+    log(`APNs configured (team ${apns.teamId}, key ${apns.keyId}, topic ${apns.bundleId})`);
+  } else {
+    log("APNs not configured — iOS app push disabled until APNS_* vars are set");
+  }
+
   const neon = resolveNeonProject({
     projectId: process.env.NEON_PROJECT_ID,
     project: process.env.NEON_PROJECT,
@@ -134,6 +162,11 @@ async function main() {
     ["TELNYX_PUBLIC_KEY", telnyx.publicKey],
     ["TELNYX_MESSAGING_PROFILE_ID", telnyx.messagingProfileId],
     ["TELNYX_FROM_NUMBER", telnyx.fromNumber],
+    ["APNS_TEAM_ID", apns.teamId],
+    ["APNS_KEY_ID", apns.keyId],
+    ["APNS_BUNDLE_ID", apns.bundleId],
+    ["APNS_PRIVATE_KEY", apns.privateKey],
+    ["APNS_PRIVATE_KEY_PATH", apns.privateKeyPath],
   ];
 
   const apiProdEntries: Array<[string, string | undefined]> = [
@@ -151,6 +184,11 @@ async function main() {
     ["TELNYX_PUBLIC_KEY", telnyx.publicKey],
     ["TELNYX_MESSAGING_PROFILE_ID", telnyx.messagingProfileId],
     ["TELNYX_FROM_NUMBER", telnyx.fromNumber],
+    ["APNS_TEAM_ID", apns.teamId],
+    ["APNS_KEY_ID", apns.keyId],
+    ["APNS_BUNDLE_ID", apns.bundleId],
+    ["APNS_PRIVATE_KEY", apns.privateKey],
+    ["APNS_PRIVATE_KEY_PATH", apns.privateKeyPath],
   ];
 
   const workerEntries: Array<[string, string | undefined]> = [
@@ -158,6 +196,10 @@ async function main() {
     ["TELNYX_API_KEY", telnyxKey],
     ["TELNYX_FROM_NUMBER", telnyx.fromNumber],
     ["TELNYX_MESSAGING_PROFILE_ID", telnyx.messagingProfileId],
+    ["APNS_TEAM_ID", apns.teamId],
+    ["APNS_KEY_ID", apns.keyId],
+    ["APNS_BUNDLE_ID", apns.bundleId],
+    ["APNS_PRIVATE_KEY", apns.privateKey],
     ["WORKER_POLL_MS", "5000"],
   ];
 
@@ -166,6 +208,10 @@ async function main() {
     ["TELNYX_API_KEY", telnyxKey],
     ["TELNYX_FROM_NUMBER", telnyx.fromNumber],
     ["TELNYX_MESSAGING_PROFILE_ID", telnyx.messagingProfileId],
+    ["APNS_TEAM_ID", apns.teamId],
+    ["APNS_KEY_ID", apns.keyId],
+    ["APNS_BUNDLE_ID", apns.bundleId],
+    ["APNS_PRIVATE_KEY", apns.privateKey],
     ["WORKER_POLL_MS", "5000"],
   ];
 
@@ -194,7 +240,7 @@ async function main() {
     ["PROD_API_URL", PROD_API_URL],
     ["BRIDGE_TOKEN", devBridge],
     ["IMSG_BIN", bridge.IMSG_BIN || "imsg"],
-    ["BOT_MESSAGE_PREFIX", bridge.BOT_MESSAGE_PREFIX || "Fambot says: 🤖✨"],
+    ["BOT_MESSAGE_PREFIX", bridge.BOT_MESSAGE_PREFIX || "Fambot says"],
     ["STATE_PATH", "./data/state.json"],
     ["FAMBOT_PROFILE", "local-dev"],
   ]);
@@ -203,7 +249,7 @@ async function main() {
     ["PROD_API_URL", PROD_API_URL],
     ["BRIDGE_TOKEN", prodBridge],
     ["IMSG_BIN", bridgeProd.IMSG_BIN || bridge.IMSG_BIN || "imsg"],
-    ["BOT_MESSAGE_PREFIX", bridgeProd.BOT_MESSAGE_PREFIX || bridge.BOT_MESSAGE_PREFIX || "Fambot says: 🤖✨"],
+    ["BOT_MESSAGE_PREFIX", bridgeProd.BOT_MESSAGE_PREFIX || bridge.BOT_MESSAGE_PREFIX || "Fambot says"],
     ["STATE_PATH", "./data/state-prod.json"],
     ["FAMBOT_PROFILE", "production"],
   ]);
@@ -231,6 +277,10 @@ async function main() {
       ["TELNYX_PUBLIC_KEY", telnyx.publicKey],
       ["TELNYX_MESSAGING_PROFILE_ID", telnyx.messagingProfileId],
       ["TELNYX_FROM_NUMBER", telnyx.fromNumber],
+      ["APNS_TEAM_ID", apns.teamId],
+      ["APNS_KEY_ID", apns.keyId],
+      ["APNS_BUNDLE_ID", apns.bundleId],
+      ["APNS_PRIVATE_KEY", apns.privateKey],
     ],
   );
 

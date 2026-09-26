@@ -466,7 +466,7 @@ export const deliveries = pgTable(
       onDelete: "set null",
     }),
     memberId: uuid("member_id").references(() => members.id, { onDelete: "set null" }),
-    channel: text("channel", { enum: ["sms", "imessage"] }).notNull(),
+    channel: text("channel", { enum: ["sms", "imessage", "push"] }).notNull(),
     /** Deterministic per occurrence+channel+recipient; unique = at-most-once send. */
     dedupeKey: text("dedupe_key").notNull(),
     /** Snapshot of the destination address (E.164 phone or imsg chat_guid). */
@@ -532,7 +532,7 @@ export const householdNotificationChannels = pgTable(
     householdId: uuid("household_id")
       .notNull()
       .references(() => households.id, { onDelete: "cascade" }),
-    channel: text("channel", { enum: ["sms", "imessage"] }).notNull(),
+    channel: text("channel", { enum: ["sms", "imessage", "push"] }).notNull(),
     enabled: boolean("enabled").notNull().default(false),
     /** For imessage: the household conversation notifications are delivered into. */
     conversationId: uuid("conversation_id").references(() => conversations.id, {
@@ -542,6 +542,42 @@ export const householdNotificationChannels = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("household_channel_uq").on(t.householdId, t.channel)]
+);
+
+/**
+ * APNs device registrations for the native iOS app (the `push` notification
+ * channel). One row per app install: `installationId` is a client-generated
+ * UUID kept in the app's local storage, so re-registrations after APNs token
+ * rotation upsert instead of piling up. `environment` records which APNs
+ * host reaches this token — dev-signed builds are always `sandbox`, App
+ * Store/TestFlight builds `production` — chosen per row at send time.
+ * Token uniqueness across installs is enforced at registration (rows holding
+ * the same token are deactivated) rather than by a DB constraint, so a
+ * reinstall with a recycled token never fails to register.
+ */
+export const pushDevices = pgTable(
+  "push_devices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    memberId: uuid("member_id")
+      .notNull()
+      .references(() => members.id, { onDelete: "cascade" }),
+    installationId: text("installation_id").notNull(),
+    platform: text("platform", { enum: ["ios"] }).notNull().default("ios"),
+    /** APNs hex device token. */
+    token: text("token").notNull(),
+    environment: text("environment", { enum: ["sandbox", "production"] }).notNull(),
+    /** False once unregistered or after APNs reports the token dead. */
+    active: boolean("active").notNull().default(true),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("push_devices_member_install_uq").on(t.memberId, t.installationId),
+    index("push_devices_member_active_idx").on(t.memberId, t.active),
+    index("push_devices_token_idx").on(t.token),
+  ]
 );
 
 /**

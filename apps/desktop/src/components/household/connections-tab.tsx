@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import {
+  disablePush,
+  enablePush,
+  installationId,
+  isTauri,
+  pushPermissionState,
+  sendLocalTestNotification,
+  type PushState,
+} from "@/lib/notifications";
 import type { MemberRow } from "./types";
 import { toast } from "sonner";
 
@@ -43,12 +53,77 @@ export function ConnectionsTab({
   const data = channelsQuery.data;
   const smsChannel = data?.channels.find((c) => c.channel === "sms");
   const imsgChannel = data?.channels.find((c) => c.channel === "imessage");
+  const pushChannel = data?.channels.find((c) => c.channel === "push");
   const google = integrations.data?.google;
 
   const withPhone = members.filter((m) => m.phone);
   const missingPhone = members.filter((m) => !m.phone);
 
-  async function setChannel(channel: "sms" | "imessage", enabled: boolean, conversationId?: string | null) {
+  const [devicePush, setDevicePush] = useState<PushState>("unsupported");
+  const [pushBusy, setPushBusy] = useState(false);
+  useEffect(() => {
+    void pushPermissionState().then(setDevicePush);
+  }, []);
+
+  const memberName = new Map(members.map((m) => [m.id, m.display_name]));
+  const thisInstallation = isTauri() ? installationId() : null;
+  const activeDevices = (data?.push.devices ?? []).filter((d) => d.active);
+
+  async function enableThisDevice() {
+    setPushBusy(true);
+    try {
+      const state = await enablePush(householdId);
+      setDevicePush(state);
+      if (state === "registered") toast.success("This device will now receive Fambot alerts.");
+      else if (state === "denied")
+        toast.error("Notifications are blocked. Allow them in iOS Settings → Fambot.");
+      else toast.error("Push isn't available on this device.");
+      await queryClient.invalidateQueries({ queryKey: ["notification-channels", householdId] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't enable notifications");
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function disableThisDevice() {
+    setPushBusy(true);
+    try {
+      await disablePush(householdId);
+      setDevicePush("prompt");
+      await queryClient.invalidateQueries({ queryKey: ["notification-channels", householdId] });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't disable notifications");
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function sendTestPush() {
+    setPushBusy(true);
+    try {
+      if (!data?.push.configured) {
+        // No APNs on the server yet — still verify OS-level presentation.
+        await sendLocalTestNotification();
+        toast.success("Local test notification sent.");
+        return;
+      }
+      const { sent, errors } = await api.pushDevices.test(householdId);
+      if (sent > 0) toast.success(`Test push sent to ${sent} device${sent === 1 ? "" : "s"}.`);
+      if (errors.length > 0) toast.error(errors.join("; "));
+      if (sent === 0 && errors.length === 0) toast("No registered devices to push to.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Test push failed");
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function setChannel(
+    channel: "sms" | "imessage" | "push",
+    enabled: boolean,
+    conversationId?: string | null
+  ) {
     try {
       await api.notificationChannels.update(householdId, { channel, enabled, conversationId });
       await queryClient.invalidateQueries({ queryKey: ["notification-channels", householdId] });
@@ -197,6 +272,90 @@ export function ConnectionsTab({
               </SelectContent>
             </Select>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card className="animate-fade-up" style={{ animationDelay: "120ms" }}>
+        <CardHeader>
+          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="font-serif text-lg">iPhone app alerts</CardTitle>
+              <CardDescription>
+                Native push notifications from the Fambot app. Each member enables it on their own
+                phone; this switch turns the channel on or off for the whole household.
+              </CardDescription>
+            </div>
+            <Switch
+              checked={pushChannel?.enabled ?? false}
+              disabled={!isOwner || !pushChannel}
+              onCheckedChange={(v) => void setChannel("push", v)}
+              aria-label="Enable app push notifications"
+              className="self-start sm:self-auto"
+            />
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {data?.push.configured ? (
+              <Badge className="bg-chart-1 text-primary-foreground">APNs ready</Badge>
+            ) : (
+              <>
+                <Badge variant="outline">APNs not configured</Badge>
+                <span className="text-muted-foreground text-xs">
+                  Set APNS_TEAM_ID / APNS_KEY_ID / APNS_BUNDLE_ID / APNS_PRIVATE_KEY on the API and
+                  worker to enable.
+                </span>
+              </>
+            )}
+          </div>
+
+          {activeDevices.length > 0 ? (
+            <div className="grid gap-1">
+              {activeDevices.map((d) => (
+                <div key={d.id} className="flex flex-wrap items-center gap-2 text-sm">
+                  <span>{memberName.get(d.memberId) ?? "Member"}</span>
+                  <span className="text-muted-foreground font-mono text-xs">
+                    {d.platform} · {d.environment}
+                    {d.installationId === thisInstallation ? " · this device" : ""}
+                  </span>
+                  {d.lastSeenAt && (
+                    <span className="text-muted-foreground text-xs">
+                      seen {new Date(d.lastSeenAt).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-muted-foreground text-sm">No phones registered yet.</p>
+          )}
+
+          {isTauri() ? (
+            <div className="flex flex-wrap gap-2">
+              {devicePush === "registered" ? (
+                <Button variant="outline" size="sm" disabled={pushBusy} onClick={() => void disableThisDevice()}>
+                  Disable on this device
+                </Button>
+              ) : (
+                <Button
+                  variant="default"
+                  size="sm"
+                  disabled={pushBusy || devicePush === "unsupported"}
+                  onClick={() => void enableThisDevice()}
+                >
+                  {devicePush === "denied" ? "Notifications blocked" : "Enable on this device"}
+                </Button>
+              )}
+              <Button variant="outline" size="sm" disabled={pushBusy} onClick={() => void sendTestPush()}>
+                {data?.push.configured ? "Send test push" : "Send local test"}
+              </Button>
+            </div>
+          ) : (
+            <p className="text-muted-foreground text-xs">
+              Open the Fambot iPhone app to enable alerts on a phone. This browser can't receive
+              them.
+            </p>
+          )}
         </CardContent>
       </Card>
 

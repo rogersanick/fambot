@@ -12,11 +12,14 @@
     "ios:device": "tauri ios dev --host",
     "ios:open": "tauri ios dev --open",
     "ios:build": "tauri ios build",
+    "ios:build:store": "VITE_APNS_ENV=production tauri ios build --export-method app-store-connect",
     "ios:init": "rustup target add aarch64-apple-ios x86_64-apple-ios aarch64-apple-ios-sim && tauri ios init",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@fambot/shared": "workspace:*",
+    "@spicavi/tauri-plugin-push-notifications": "0.1.0",
+    "@tauri-apps/plugin-notification": "^2.3.1",
     "@fontsource-variable/outfit": "^5.2.0",
     "@fontsource/fira-code": "^5.2.0",
     "@fontsource/merriweather": "^5.2.0",

@@ -19,7 +19,7 @@ The LLM only ever proposes structured actions (`create_reminder`, `create_task`,
 - **Tasks** are obligations that stay open until someone completes them. A due date is optional and is not a notification. Recurring tasks are a *series*: each occurrence is created on its fixed schedule and can be postponed independently.
 - **Lists** are checklists. Items check and uncheck only — they are never tasks. Standing household lists (groceries, packing) need no parent. A list can optionally attach to a Task, an Event, or both (packing for a trip that also has a “pack the car” task).
 - **Reminders** are notification schedules. Most attach to one Task or Event (never both); a one-off reminder with no parent is allowed. On a Task they may repeat until the task is completed (“remind me every 4 hours”). Completing a task cancels its remaining reminders.
-- **Notifications broadcast to household channels, never web chat.** Scheduled reminders go to every channel enabled in **Connections**: **SMS via Telnyx** (default — that's why every member has a phone number) and **iMessage** (opt-in, via the Mac bridge). The in-app chat is only for talking to Fambot. Members can reply to a task reminder with "done" and it completes the task. Every delivery is recorded in the `deliveries` audit table.
+- **Notifications broadcast to household channels, never web chat.** Scheduled reminders go to every channel enabled in **Connections**: **SMS via Telnyx** (default — that's why every member has a phone number), **iMessage** (opt-in, via the Mac bridge), and **app push via APNs** (default; alerts every iPhone that registered in the Fambot app). The in-app chat is only for talking to Fambot. Members can reply to a task reminder with "done" and it completes the task. Every delivery is recorded in the `deliveries` audit table.
 
 ## Repo structure
 
@@ -34,7 +34,7 @@ packages/
   database/  Drizzle schema + migrations
   domain/    validation / authorization / resolution + reminder/task/list/event services
   ai/        AIProvider (OpenAI structured outputs, retry-on-invalid, audit logging)
-  messaging/ reply router (app chat / SMS / iMessage) + NotificationDispatcher + Telnyx adapter
+  messaging/ reply router (app chat / SMS / iMessage) + NotificationDispatcher + Telnyx + APNs adapters
   calendar/  internal + Google Calendar providers (per-user OAuth, encrypted tokens)
 ```
 
@@ -113,12 +113,52 @@ bun ios:open         # same, but opens Xcode
 **Build an IPA:**
 
 ```sh
-bun ios:build        # needs Xcode signing / APPLE_DEVELOPMENT_TEAM
+bun ios:build        # dev-signed, bundles apps/desktop/.env.prod (Fly API)
+bun ios:build:store  # App Store Connect export for TestFlight (production APNs)
 ```
 
 Inspect the webview from Safari → Develop → [Simulator or device] → localhost.
 
-A shipped IPA would set `VITE_API_URL` to a public API. Cross-origin cookies from Tauri's custom-scheme webview are a follow-up; the local loop above does not need that.
+Bundled IPAs set `VITE_API_URL` to the Fly API (`apps/desktop/.env.prod`). Because Tauri's custom-scheme webview can't hold cross-site cookies, those builds authenticate with Better Auth **bearer sessions**: the API's bearer plugin returns the session token in the `set-auth-token` header, the client stores it locally (`src/lib/session-token.ts`), and attaches it as `Authorization: Bearer`. Web and dev-proxy builds keep plain cookies — nothing changes for Vercel.
+
+## iPhone app alerts (APNs push)
+
+The `push` notification channel sends real background alerts to every iPhone that registered in the Fambot app — reminder fires and task nudges arrive even when the app is closed. Two plugins power it: the official `tauri-plugin-notification` (permission + local notifications) and the pinned `tauri-plugin-push-notifications` 0.1.0 (APNs registration, foreground payloads, tap deep-links). `src/lib/notifications.ts` is the only module that touches either.
+
+**One-time Apple setup (manual, in order):**
+
+1. Install full Xcode from the Mac App Store (Command Line Tools alone can't build for iOS), launch it once, then `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` and `brew install cocoapods`.
+2. Enroll in the [Apple Developer Program](https://developer.apple.com/programs/) ($99/yr — required for any APNs push) and sign into Xcode → Settings → Accounts.
+3. Create an **APNs Auth Key**: developer.apple.com → Certificates, Identifiers & Profiles → Keys → add key with "Apple Push Notifications service". Download the `.p8` (one-time download!), store it outside the repo, note the **Key ID** and your **Team ID**.
+4. In `apps/api/.env` set `APNS_TEAM_ID`, `APNS_KEY_ID`, and `APNS_PRIVATE_KEY_PATH=~/path/to/AuthKey_XXXX.p8`, then re-run `bun run env:setup` — it inlines the key (base64) into the api/worker envs and `.env.fly`. `APNS_BUNDLE_ID` defaults to `app.fambot.desktop`.
+5. `bun ios:init`, then in the generated Xcode project (`bun ios:open`) select your team and add the **Push Notifications** capability (this puts `aps-environment` in the entitlements — registration rejects without it). Verify a built app with `codesign -d --entitlements - <app>`.
+6. Phones: enable Developer Mode (Settings → Privacy & Security) for direct Xcode installs; trust the Mac on first cable connect.
+
+**Sandbox vs production (important):** Xcode-installed builds always carry `aps-environment=development`, i.e. **sandbox** APNs tokens — even when the app points at the production Fly API. TestFlight/App Store builds get **production** tokens. The client reports its environment at registration (`VITE_APNS_ENV=production` is set only by `ios:build:store`), each `push_devices` row stores it, and the APNs adapter picks the sandbox or production host **per device row**. So the Fly worker can alert a dev-signed phone and a TestFlight phone in the same fan-out.
+
+**Dev loop (local stack):** `bun dev:ios` + `bun ios` (Simulator) or `bun ios:device` (real phone over the LAN; cookies stay first-party through the Vite proxy). With `APNS_*` in `apps/worker/.env`, a reminder created locally alerts the dev phone end to end via sandbox APNs. In the app: **Connections → iPhone app alerts → Enable on this device**, then **Send test push**. Payload-only iteration without APNs also works: `xcrun simctl push booted app.fambot.desktop payload.json` (Apple Silicon Simulators on Xcode 14+/iOS 16+ can even register real sandbox tokens).
+
+**Prod rollout (deployed stack):**
+
+```sh
+bun run prod:db          # push_devices table + push channel enums → Neon
+bun run prod:up          # imports APNS_* Fly secrets, deploys API + worker
+bun ios:build            # direct install on a phone via Xcode, or:
+bun ios:build:store      # TestFlight (bump bundle.iOS.bundleVersion in tauri.ios.conf.json first)
+xcrun altool --upload-app --type ios -f src-tauri/gen/apple/build/arm64/Fambot.ipa \
+  --apiKey <ASC_KEY_ID> --apiIssuer <ISSUER_ID>   # App Store Connect API key, not the APNs key
+```
+
+For TestFlight: create the App Store Connect app record for bundle id `app.fambot.desktop`, add both Apple IDs as internal testers (no App Review), and set `ITSAppUsesNonExemptEncryption=false` in the generated iOS Info.plist to skip the export-compliance prompt. Run `bunx tauri icon <1024px png>` once after `ios:init` — App Store Connect requires the full icon set. TestFlight builds expire after 90 days; re-upload occasionally (bump `bundleVersion` each time).
+
+On each phone: install, sign in (bearer auth handles the cross-origin session), open **Connections**, enable the household **iPhone app alerts** switch (owner, once) and **Enable on this device** (each member). Then create a scheduled reminder and watch both phones light up.
+
+**Operating notes:**
+
+- APNs tokens rotate; the app silently re-registers on every launch once a user opted in (stable per-install `installationId` keeps it one row per phone).
+- If APNs reports a token permanently dead (`Unregistered`/`BadDeviceToken`), the device row is deactivated automatically; re-enable from the phone to register fresh.
+- `push` deliveries land in the same `deliveries` audit table (`skipped` when a member has no registered phone or `APNS_*` is unset; APNs never blocks SMS/iMessage).
+- A tapped notification deep-links to the task/reminder; foreground pushes show an in-app toast instead of a system banner.
 
 ## SMS notifications (Telnyx)
 
@@ -170,7 +210,7 @@ Only a household owner can authenticate. The CLI pings `/health` and checks that
 | `BRIDGE_TOKEN` | generated | must match the target API (`apps/api/.env` or `.env.prod`) |
 | `BRIDGE_EMAIL` / `BRIDGE_PASSWORD` | | optional non-interactive login for `bun bridge:*` |
 | `IMSG_BIN` | `imsg` | path to the imsg binary |
-| `BOT_MESSAGE_PREFIX` | `Fambot says: 🤖✨` | outbound banner and echo filter; bridge replies also include an automated-message disclaimer |
+| `BOT_MESSAGE_PREFIX` | `Fambot says` | outbound header and echo filter |
 | `STATE_PATH` | `./data/state.json` | replay cursor (`./data/state-prod.json` on prod) |
 
 ## Environment reference
@@ -190,8 +230,9 @@ Only a household owner can authenticate. The CLI pings `/health` and checks that
 | `TELNYX_API_KEY` / `TELNYX_FROM_NUMBER` | For SMS | enables the default SMS notification channel |
 | `TELNYX_PUBLIC_KEY` | For SMS webhooks | verifies Telnyx webhook signatures |
 | `TELNYX_MESSAGING_PROFILE_ID` | | pins sends and selects the webhook profile |
+| `APNS_TEAM_ID` / `APNS_KEY_ID` / `APNS_BUNDLE_ID` / `APNS_PRIVATE_KEY` | For app push | APNs token auth; all four required. Set `APNS_PRIVATE_KEY_PATH` in `apps/api/.env` and `env:setup` inlines the `.p8` as base64 |
 
-Worker env files only need `DATABASE_URL`, `TELNYX_*`, and `WORKER_POLL_MS`. Desktop prod build uses `VITE_API_URL=https://fambot-nrogers.fly.dev` in `apps/desktop/.env.prod`.
+Worker env files only need `DATABASE_URL`, `TELNYX_*`, `APNS_*`, and `WORKER_POLL_MS`. Desktop prod build uses `VITE_API_URL=https://fambot-nrogers.fly.dev` in `apps/desktop/.env.prod`.
 
 ## Tests & typecheck
 

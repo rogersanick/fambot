@@ -329,7 +329,7 @@ const readTools: ToolDefinition[] = [
   {
     name: "get_notification_channels",
     description:
-      "Show which household broadcast channels (sms, imessage) are enabled for scheduled reminders and task nudges.",
+      "Show which household broadcast channels (sms, imessage, push) are enabled for scheduled reminders and task nudges.",
     mutating: false,
     inputSchema: z.object({}),
     handler: async (ctx) => {

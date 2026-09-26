@@ -9,7 +9,7 @@ const config: BridgeConfig = {
   BRIDGE_TOKEN: "tok",
   BRIDGE_MEMBER_ID: "11111111-1111-4111-8111-111111111111",
   IMSG_BIN: "imsg",
-  BOT_MESSAGE_PREFIX: "Fambot says: 🤖✨",
+  BOT_MESSAGE_PREFIX: "Fambot says",
   STATE_PATH: `/tmp/fambot-relay-test-${Date.now()}.json`,
 };
 
@@ -42,15 +42,23 @@ function capture(responses: Array<number | Error> = [200]) {
 const flush = () => new Promise((r) => setTimeout(r, 20));
 
 describe("formatBotMessage", () => {
-  test("makes the automated sender unmistakable", () => {
+  test("adds emoji, a colon, and a divider to the Fambot header", () => {
     const body = formatBotMessage(config.BOT_MESSAGE_PREFIX, "Trash reminder is set.");
-    expect(body).toStartWith("Fambot says: 🤖✨\n━━━━━━━━━━━━━━━━━━━━\n");
-    expect(body).toContain("Trash reminder is set.");
-    expect(body).toEndWith("Automated message by Fambot.");
+    expect(body).toBe(
+      "Fambot says: 🤖✨\n━━━━━━━━━━━━━━━━━━━━\nTrash reminder is set."
+    );
   });
 
-  test("always includes a Fambot banner when the configured prefix is empty", () => {
-    expect(formatBotMessage("", "Done.")).toStartWith("🤖 FAMBOT\n");
+  test("uses the decorated default when the configured prefix is empty", () => {
+    expect(formatBotMessage("", "Done.")).toBe(
+      "Fambot says: 🤖✨\n━━━━━━━━━━━━━━━━━━━━\nDone."
+    );
+  });
+
+  test("does not duplicate decorations from an older configured prefix", () => {
+    expect(formatBotMessage("Fambot says: 🤖✨", "Done.")).toBe(
+      "Fambot says: 🤖✨\n━━━━━━━━━━━━━━━━━━━━\nDone."
+    );
   });
 });
 
@@ -76,7 +84,13 @@ describe("InboundRelay", () => {
     const state = new BridgeState(config.STATE_PATH);
     const relay = new InboundRelay(config, state, fetchFn);
     relay.handle(msg({ is_from_me: true, guid: "self1", text: "remind me to stretch" }));
-    relay.handle(msg({ is_from_me: true, guid: "echo1", text: "Fambot says: 🤖✨\nDone!" }));
+    relay.handle(
+      msg({
+        is_from_me: true,
+        guid: "echo1",
+        text: "Fambot says: 🤖✨\n━━━━━━━━━━━━━━━━━━━━\nDone!",
+      })
+    );
     state.recordSent("ledger1");
     relay.handle(msg({ is_from_me: true, guid: "ledger1", text: "un-prefixed but in sent ledger" }));
     await flush();

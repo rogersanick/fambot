@@ -2,13 +2,14 @@ import { createDb } from "@fambot/database";
 import { createServices } from "@fambot/domain";
 import { createAIRuntime } from "@fambot/ai";
 import {
+  ApnsClient,
   AppChatChannel,
   ChannelRouter,
   ImsgChannel,
   NotificationDispatcher,
   TelnyxSmsChannel,
 } from "@fambot/messaging";
-import { env, telnyxEnabled } from "./env";
+import { apnsEnabled, env, telnyxEnabled } from "./env";
 
 export const db = createDb(env.DATABASE_URL);
 export const services = createServices(db);
@@ -35,8 +36,19 @@ export const telnyxChannel = telnyxEnabled
   : null;
 export const channelRouter = new ChannelRouter(db, appChatChannel, imsgChannel, telnyxChannel);
 
+/** APNs sender — used by the worker's twin config and the API's test push. */
+export const apnsClient = apnsEnabled
+  ? new ApnsClient({
+      teamId: env.APNS_TEAM_ID!,
+      keyId: env.APNS_KEY_ID!,
+      bundleId: env.APNS_BUNDLE_ID!,
+      privateKey: env.APNS_PRIVATE_KEY!,
+    })
+  : null;
+
 /** Broadcast dispatcher for scheduled notifications (worker + API share it). */
 export const notificationDispatcher = new NotificationDispatcher(db, {
   telnyx: telnyxChannel,
+  apns: apnsClient,
   notifyImsgOutbox: () => outboxNotifier?.(),
 });

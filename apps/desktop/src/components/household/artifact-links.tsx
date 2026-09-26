@@ -11,7 +11,7 @@ export const selectClass =
   "border-input h-11 w-full rounded-md border bg-transparent px-3 text-base shadow-xs outline-none sm:h-9 sm:text-sm";
 
 export type LinkedArtifact = { type: ArtifactType; id: string; title: string; when?: string };
-export type NotificationKind = "sms" | "imessage";
+export type NotificationKind = "sms" | "imessage" | "push";
 
 const TYPE_LABEL: Record<ArtifactType, string> = {
   task: "Task",
@@ -23,6 +23,7 @@ const TYPE_LABEL: Record<ArtifactType, string> = {
 const CHANNEL_LABEL: Record<NotificationKind, string> = {
   sms: "SMS",
   imessage: "iMessage",
+  push: "app push",
 };
 
 /** Time shown on a reminder chip: clock time when it shares a day with the parent, otherwise a dated label. */

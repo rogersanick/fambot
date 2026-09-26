@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { parseArtifactLocation, type ArtifactRef } from "@fambot/shared";
 import { useSession } from "./lib/auth";
 import { api } from "./lib/api";
+import { initNotifications } from "./lib/notifications";
 import { LoginScreen } from "./screens/login";
 import { OnboardingScreen } from "./screens/onboarding";
 import { Dashboard } from "./screens/dashboard";
@@ -46,6 +47,14 @@ export default function App() {
     enabled: Boolean(session),
   });
 
+  const householdId = selectedHouseholdId ?? me.data?.memberships[0]?.household.id;
+
+  // Tauri iOS only (no-op elsewhere): arm push listeners and refresh a
+  // rotated APNs token once a signed-in household member is known.
+  useEffect(() => {
+    if (householdId) void initNotifications(householdId);
+  }, [householdId]);
+
   if (isPending || (session && (me.isLoading || me.isError))) {
     return (
       <main className="flex min-h-svh items-center justify-center">
@@ -76,7 +85,6 @@ export default function App() {
     );
   }
 
-  const householdId = selectedHouseholdId ?? me.data?.memberships[0]?.household.id;
   const meName =
     me.data?.memberships.find((row) => row.household.id === householdId)?.member.displayName ??
     me.data?.memberships[0]?.member.displayName ??

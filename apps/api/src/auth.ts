@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { bearer } from "better-auth/plugins";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { account, session, user, verification } from "@fambot/database";
 import { db } from "./context";
@@ -21,6 +22,9 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
   },
+  // Bearer sessions for the bundled Tauri iOS app, where the webview can't
+  // hold cross-site cookies against the Fly API. Web clients keep cookies.
+  plugins: [bearer()],
   ...(googleEnabled
     ? {
         socialProviders: {

@@ -175,12 +175,31 @@ describe("ProgressReporter", () => {
       },
       minDelayMs: 0,
       maxUpdates: 2,
+      random: () => 0,
     });
     await reporter.onToolStep(step("list_tasks", "5 task(s)."));
     await reporter.onToolStep(step("list_lists", "2 list(s)."));// same read template → deduped
     await reporter.onToolStep(step("add_list_items", '✓ Added "milk"'));
     await reporter.onToolStep(step("create_task", "✓ Task added")); // over cap
-    expect(sent).toEqual(["Looking that up…", '✓ Added "milk"']);
+    expect(sent).toEqual([
+      "⏳ Fambot is working…\nProgress update: Looking that up…",
+      '⏳ Fambot is working…\nProgress update: ✓ Added "milk"',
+    ]);
+  });
+
+  test("randomly selects a clear progress verb", async () => {
+    const sent: string[] = [];
+    const reporter = new ProgressReporter({
+      send: async (t) => {
+        sent.push(t);
+      },
+      minDelayMs: 0,
+      random: () => 0.999,
+    });
+    await reporter.onToolStep(step("create_list", '✓ List "Costco" is ready.'));
+    expect(sent).toEqual([
+      '⏳ Fambot is noodling…\nProgress update: ✓ List "Costco" is ready.',
+    ]);
   });
 
   test("failed steps and send failures are swallowed", async () => {

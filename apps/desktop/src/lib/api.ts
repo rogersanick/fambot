@@ -3,12 +3,20 @@
  * (Better Auth session). In dev, Vite proxies /api to localhost:8787.
  */
 
+import { sessionToken } from "./session-token";
+
 const base = import.meta.env.VITE_API_URL ?? "";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  // Bundled Tauri builds authenticate with a bearer token (see lib/auth.ts);
+  // everywhere else the session cookie rides along via credentials: include.
+  const token = sessionToken();
   const res = await fetch(`${base}/api${path}`, {
     credentials: "include",
-    headers: init?.body ? { "content-type": "application/json" } : undefined,
+    headers: {
+      ...(init?.body ? { "content-type": "application/json" } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
     ...init,
   });
   if (!res.ok) {
@@ -164,15 +172,26 @@ export type Integrations = {
 };
 export type NotificationChannel = {
   id: string;
-  channel: "sms" | "imessage";
+  channel: "sms" | "imessage" | "push";
   enabled: boolean;
   conversationId: string | null;
 };
+export type PushDevice = {
+  id: string;
+  memberId: string;
+  installationId: string;
+  platform: string;
+  environment: "sandbox" | "production";
+  active: boolean;
+  lastSeenAt: string | null;
+};
+export type PushStatus = { configured: boolean; devices: PushDevice[] };
 export type NotificationChannelsResponse = {
   channels: NotificationChannel[];
   imessageConversations: Array<{ id: string; name: string | null; kind: "direct" | "group" }>;
   sms: SmsStatus;
   bridge: BridgeStatus;
+  push: PushStatus;
 };
 
 export type Me = {
@@ -254,10 +273,36 @@ export const api = {
 
   notificationChannels: {
     get: (hid: string) => req<NotificationChannelsResponse>(`/households/${hid}/notification-channels`),
-    update: (hid: string, body: { channel: "sms" | "imessage"; enabled: boolean; conversationId?: string | null }) =>
+    update: (
+      hid: string,
+      body: { channel: "sms" | "imessage" | "push"; enabled: boolean; conversationId?: string | null }
+    ) =>
       req<{ channel: NotificationChannel }>(`/households/${hid}/notification-channels`, {
         method: "PUT",
         body: JSON.stringify(body),
+      }),
+  },
+
+  pushDevices: {
+    register: (
+      hid: string,
+      body: {
+        installationId: string;
+        token: string;
+        platform: "ios";
+        environment: "sandbox" | "production";
+      }
+    ) =>
+      req<{ device: PushDevice }>(`/households/${hid}/push-devices`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    unregister: (hid: string, installationId: string) =>
+      req<{ ok: true }>(`/households/${hid}/push-devices/${installationId}`, { method: "DELETE" }),
+    /** Sends a real APNs push to the caller's registered devices. */
+    test: (hid: string) =>
+      req<{ sent: number; errors: string[] }>(`/households/${hid}/push-devices/test`, {
+        method: "POST",
       }),
   },
 

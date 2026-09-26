@@ -901,7 +901,7 @@ export function createCommentService(db: Db) {
 
 export function createNotificationChannelService(db: Db) {
   return {
-    /** Household broadcast channels (sms/imessage) and whether each is enabled. */
+    /** Household broadcast channels (sms/imessage/push) and whether each is enabled. */
     async list(householdId: string) {
       return db
         .select({

@@ -11,6 +11,7 @@ import {
   identities,
   members,
   messages,
+  pushDevices,
   reminders,
   tasks,
 } from "@fambot/database";
@@ -30,10 +31,11 @@ import {
   type GoogleConfig,
 } from "@fambot/calendar";
 import { auth } from "./auth";
-import { db, services, telnyxChannel } from "./context";
-import { env, googleEnabled, telnyxEnabled } from "./env";
+import { apnsClient, db, services, telnyxChannel } from "./context";
+import { apnsEnabled, env, googleEnabled, telnyxEnabled } from "./env";
 import { processInbound } from "./pipeline";
 import { getBridgeStatus } from "./bridge-ws";
+import { registerPushDevice, unregisterPushDevice } from "./push-devices";
 import {
   acceptInvite,
   createInviteRecord,
@@ -149,10 +151,12 @@ api.post("/households", async (c) => {
           value: body.imessageHandle ?? body.ownerPhone,
         });
     }
-    // Default notification channels: SMS broadcasts by default, iMessage opt-in.
+    // Default notification channels: SMS + app push broadcast by default,
+    // iMessage opt-in. Push only reaches members who register a phone.
     await tx.insert(householdNotificationChannels).values([
       { householdId: household!.id, channel: "sms", enabled: true },
       { householdId: household!.id, channel: "imessage", enabled: false },
+      { householdId: household!.id, channel: "push", enabled: true },
     ]);
     return { household: household!, member: member! };
   });
@@ -461,24 +465,52 @@ api.patch("/households/:hid/members/:mid/imessage", async (c) => {
 
 // --- household notification channels ------------------------------------------
 
+/** Every channel a household broadcasts on, with its default enablement. */
+const CHANNEL_DEFAULTS = [
+  { channel: "sms", enabled: true },
+  { channel: "imessage", enabled: false },
+  { channel: "push", enabled: true },
+] as const;
+
 async function getOrCreateChannels(householdId: string) {
   const existing = await db
     .select()
     .from(householdNotificationChannels)
     .where(eq(householdNotificationChannels.householdId, householdId));
-  if (existing.length >= 2) return existing;
-  // Households created before channels existed: seed the defaults on read.
+  const missing = CHANNEL_DEFAULTS.filter(
+    (def) => !existing.some((row) => row.channel === def.channel)
+  );
+  if (missing.length === 0) return existing;
+  // Households created before a channel existed: seed its default on read.
   await db
     .insert(householdNotificationChannels)
-    .values([
-      { householdId, channel: "sms", enabled: true },
-      { householdId, channel: "imessage", enabled: false },
-    ])
+    .values(missing.map((def) => ({ householdId, channel: def.channel, enabled: def.enabled })))
     .onConflictDoNothing();
   return db
     .select()
     .from(householdNotificationChannels)
     .where(eq(householdNotificationChannels.householdId, householdId));
+}
+
+/** Client-facing device shape — never exposes the raw APNs token. */
+function sanitizeDevice(device: typeof pushDevices.$inferSelect) {
+  return {
+    id: device.id,
+    memberId: device.memberId,
+    installationId: device.installationId,
+    platform: device.platform,
+    environment: device.environment,
+    active: device.active,
+    lastSeenAt: device.lastSeenAt,
+  };
+}
+
+async function householdPushDevices(householdId: string) {
+  return db
+    .select({ device: pushDevices })
+    .from(pushDevices)
+    .innerJoin(members, eq(pushDevices.memberId, members.id))
+    .where(eq(members.householdId, householdId));
 }
 
 api.get("/households/:hid/notification-channels", async (c) => {
@@ -490,16 +522,21 @@ api.get("/households/:hid/notification-channels", async (c) => {
     .select({ id: conversations.id, name: conversations.name, kind: conversations.kind })
     .from(conversations)
     .where(and(eq(conversations.householdId, hid), eq(conversations.channel, "imessage")));
+  const devices = await householdPushDevices(hid);
   return c.json({
     channels,
     imessageConversations,
     sms: smsStatus(),
     bridge: getBridgeStatus(),
+    push: {
+      configured: apnsEnabled,
+      devices: devices.map(({ device }) => sanitizeDevice(device)),
+    },
   });
 });
 
 const PutChannelSchema = z.object({
-  channel: z.enum(["sms", "imessage"]),
+  channel: z.enum(["sms", "imessage", "push"]),
   enabled: z.boolean(),
   conversationId: z.string().uuid().nullable().optional(),
 });
@@ -544,6 +581,98 @@ api.put("/households/:hid/notification-channels", async (c) => {
     )
     .returning();
   return c.json({ channel });
+});
+
+// --- push devices (APNs registrations for the native app) ----------------------
+
+const RegisterPushDeviceSchema = z.object({
+  installationId: z.string().uuid(),
+  /** APNs device tokens are variable-length hex; never hard-code the size. */
+  token: z.string().regex(/^[0-9a-f]{16,512}$/i, "not an APNs hex device token"),
+  platform: z.literal("ios").default("ios"),
+  environment: z.enum(["sandbox", "production"]),
+});
+
+/**
+ * Register (or refresh, on token rotation) the caller's device. The device is
+ * always bound to the *caller's* member row — a member id in the body would
+ * let one member impersonate another's phone, so none is accepted.
+ */
+api.post("/households/:hid/push-devices", async (c) => {
+  const user = c.get("user");
+  const hid = c.req.param("hid");
+  const me = await requireMember(user.id, hid);
+  if (!me) return c.json({ error: "forbidden" }, 403);
+  const body = RegisterPushDeviceSchema.parse(await c.req.json());
+  const device = await registerPushDevice(db, {
+    memberId: me.id,
+    installationId: body.installationId,
+    token: body.token,
+    platform: body.platform,
+    environment: body.environment,
+  });
+  return c.json({ device: sanitizeDevice(device) });
+});
+
+/** Deactivate the caller's own registration for one install. */
+api.delete("/households/:hid/push-devices/:installationId", async (c) => {
+  const user = c.get("user");
+  const hid = c.req.param("hid");
+  const me = await requireMember(user.id, hid);
+  if (!me) return c.json({ error: "forbidden" }, 403);
+  await unregisterPushDevice(db, {
+    memberId: me.id,
+    installationId: c.req.param("installationId"),
+  });
+  return c.json({ ok: true });
+});
+
+/** Real APNs push to the caller's active devices — the end-to-end smoke test. */
+api.post("/households/:hid/push-devices/test", async (c) => {
+  const user = c.get("user");
+  const hid = c.req.param("hid");
+  const me = await requireMember(user.id, hid);
+  if (!me) return c.json({ error: "forbidden" }, 403);
+  if (!apnsClient) {
+    return c.json(
+      { error: "apns_not_configured", message: "Set the APNS_* vars on the API to send pushes." },
+      503
+    );
+  }
+  const devices = await db
+    .select()
+    .from(pushDevices)
+    .where(and(eq(pushDevices.memberId, me.id), eq(pushDevices.active, true)));
+  let sent = 0;
+  const errors: string[] = [];
+  for (const device of devices) {
+    try {
+      const result = await apnsClient.send({
+        token: device.token,
+        environment: device.environment,
+        title: "Fambot",
+        body: "Test push — alerts are working on this phone. 🤖✨",
+      });
+      if (result.ok) {
+        sent++;
+        await db
+          .update(pushDevices)
+          .set({ lastSeenAt: new Date(), updatedAt: new Date() })
+          .where(eq(pushDevices.id, device.id));
+      } else {
+        if (result.tokenInvalid) {
+          await db
+            .update(pushDevices)
+            .set({ active: false, updatedAt: new Date() })
+            .where(eq(pushDevices.id, device.id));
+        }
+        errors.push(`${device.environment}: ${result.reason}`);
+      }
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  return c.json({ sent, errors });
 });
 
 // --- chat --------------------------------------------------------------------

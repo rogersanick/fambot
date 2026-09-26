@@ -15,6 +15,12 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Local notifications + permission prompts (official plugin).
+tauri-plugin-notification = "2"
+# APNs remote-push registration + foreground/tap events (pinned; audited 0.1.0).
+# iOS-only in practice: desktop builds report unsupported and the JS adapter
+# never calls it outside Tauri iOS.
+tauri-plugin-push-notifications = "=0.1.0"
 
 [profile.release]
 codegen-units = 1

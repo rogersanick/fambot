@@ -9,7 +9,7 @@ const ConfigSchema = z.object({
   BRIDGE_TOKEN: z.string().default("dev-bridge-token"),
   BRIDGE_MEMBER_ID: z.string().uuid().optional(),
   IMSG_BIN: z.string().default("imsg"),
-  BOT_MESSAGE_PREFIX: z.string().default("Fambot says: 🤖✨"),
+  BOT_MESSAGE_PREFIX: z.string().default("Fambot says"),
   STATE_PATH: z.string().default("./data/state.json"),
 });
 

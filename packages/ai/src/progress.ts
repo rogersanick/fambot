@@ -7,10 +7,20 @@ export type ProgressReporterOptions = {
   minDelayMs?: number;
   /** Hard cap per run (SMS costs money; chats hate spam). */
   maxUpdates?: number;
+  /** Injectable for deterministic tests. */
+  random?: () => number;
 };
 
 /** Read tools get a generic "working on it" line instead of their result. */
 const READ_TOOL_TEXT = "Looking that up…";
+const PROGRESS_VERBS = [
+  "working",
+  "cogitating",
+  "thinking",
+  "progressing",
+  "planifying",
+  "noodling",
+] as const;
 const READ_TOOLS = new Set([
   "get_context",
   "list_members",
@@ -36,10 +46,12 @@ export class ProgressReporter {
   private lastText: string | null = null;
   private readonly minDelayMs: number;
   private readonly maxUpdates: number;
+  private readonly random: () => number;
 
   constructor(private readonly options: ProgressReporterOptions) {
     this.minDelayMs = options.minDelayMs ?? 2_500;
     this.maxUpdates = options.maxUpdates ?? 3;
+    this.random = options.random ?? Math.random;
   }
 
   async onToolStep(step: AgentToolStep): Promise<void> {
@@ -50,7 +62,8 @@ export class ProgressReporter {
     this.lastText = text;
     this.sent += 1;
     try {
-      await this.options.send(text);
+      const verb = PROGRESS_VERBS[Math.floor(this.random() * PROGRESS_VERBS.length)]!;
+      await this.options.send(`⏳ Fambot is ${verb}…\nProgress update: ${text}`);
     } catch {
       // best-effort
     }

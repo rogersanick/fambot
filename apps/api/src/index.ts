@@ -45,6 +45,8 @@ app.use(
   cors({
     origin: (origin) => (isAllowedOrigin(origin, env.APP_URL) ? origin : null),
     credentials: true,
+    // The Tauri iOS client reads its bearer session token from this header.
+    exposeHeaders: ["set-auth-token"],
   })
 );
 

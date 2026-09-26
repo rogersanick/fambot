@@ -11,12 +11,14 @@ import {
   members,
   messages,
   outboxMessages,
+  pushDevices,
   reminders,
   tasks,
   type Db,
 } from "@fambot/database";
 import { NotificationDispatcher } from "./dispatcher";
 import { TelnyxSmsChannel } from "./telnyx";
+import { ApnsClient, type ApnsTransport } from "./apns";
 
 /** Integration tests against the local dev Postgres; skipped when unavailable. */
 const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://postgres:fambot@localhost:5433/fambot";
@@ -52,7 +54,69 @@ function randPhone() {
   return `+1444${String(Math.floor(Math.random() * 10_000_000)).padStart(7, "0")}`;
 }
 
-async function fixture(opts?: { sms?: boolean; imessage?: boolean; memberCount?: number }) {
+/** Test P-256 key generated once; the fake transport never verifies it. */
+let testApnsKeyPem: Promise<string> | null = null;
+function apnsKeyPem(): Promise<string> {
+  testApnsKeyPem ??= (async () => {
+    const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+      "sign",
+      "verify",
+    ]);
+    const pkcs8 = Buffer.from(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+    return `-----BEGIN PRIVATE KEY-----\n${pkcs8.toString("base64")}\n-----END PRIVATE KEY-----`;
+  })();
+  return testApnsKeyPem;
+}
+
+async function fakeApns(
+  respond: (req: { host: string; path: string }) => { status: number; body?: string } = () => ({
+    status: 200,
+  })
+) {
+  const pushSent: Array<{ host: string; token: string; body: string }> = [];
+  const transport: ApnsTransport = async (args) => {
+    pushSent.push({ host: args.host, token: args.path.replace("/3/device/", ""), body: args.body });
+    const res = respond(args);
+    return {
+      status: res.status,
+      headers: { "apns-id": `apns_${randomUUID()}` },
+      body: res.body ?? "",
+    };
+  };
+  const apns = new ApnsClient({
+    teamId: "TEAM123456",
+    keyId: "KEY1234567",
+    bundleId: "app.fambot.desktop",
+    privateKey: await apnsKeyPem(),
+    transport,
+  });
+  return { apns, pushSent };
+}
+
+async function registerDevice(
+  memberId: string,
+  opts?: { environment?: "sandbox" | "production"; token?: string }
+) {
+  const [device] = await db
+    .insert(pushDevices)
+    .values({
+      memberId,
+      installationId: randomUUID(),
+      platform: "ios",
+      token: opts?.token ?? randomUUID().replaceAll("-", ""),
+      environment: opts?.environment ?? "sandbox",
+      active: true,
+    })
+    .returning();
+  return device!;
+}
+
+async function fixture(opts?: {
+  sms?: boolean;
+  imessage?: boolean;
+  push?: boolean;
+  memberCount?: number;
+}) {
   const [household] = await db
     .insert(households)
     .values({ name: `disp-${randomUUID().slice(0, 8)}`, timezone: "America/New_York" })
@@ -86,6 +150,7 @@ async function fixture(opts?: { sms?: boolean; imessage?: boolean; memberCount?:
       enabled: opts?.imessage ?? false,
       conversationId: opts?.imessage ? imsgConv!.id : null,
     },
+    { householdId: household!.id, channel: "push", enabled: opts?.push ?? false },
   ]);
   return { household: household!, members: rows, imsgConv: imsgConv! };
 }
@@ -276,5 +341,162 @@ describe("NotificationDispatcher (integration)", () => {
       text: "will fail",
     });
     expect(again.results).toHaveLength(0);
+  });
+});
+
+describe("NotificationDispatcher push channel (integration)", () => {
+  test("two devices on one member both alert, with distinct per-device dedupe keys", async () => {
+    if (!available) return;
+    const f = await fixture({ sms: false, push: true });
+    const memberId = f.members[0]!.id;
+    await registerDevice(memberId, { environment: "sandbox" });
+    await registerDevice(memberId, { environment: "production" });
+    const { apns, pushSent } = await fakeApns();
+    const dispatcher = new NotificationDispatcher(db, { telnyx: null, apns });
+
+    const reminderId = await makeReminder(f.household.id, memberId);
+    const req = {
+      householdId: f.household.id,
+      kind: "reminder" as const,
+      sourceId: reminderId,
+      occurrenceKey: new Date().toISOString(),
+      target: { memberId, conversationId: null },
+      text: "⏰ Reminder: pack lunches",
+    };
+    await dispatcher.dispatch(req);
+
+    // Both phones alerted; the per-row environment picked the APNs host.
+    expect(pushSent).toHaveLength(2);
+    expect(pushSent.map((p) => p.host).sort()).toEqual([
+      "api.push.apple.com",
+      "api.sandbox.push.apple.com",
+    ]);
+
+    const audit = await db.select().from(deliveries).where(eq(deliveries.reminderId, reminderId));
+    expect(audit).toHaveLength(2);
+    expect(audit.every((d) => d.channel === "push" && d.status === "queued")).toBe(true);
+    expect(new Set(audit.map((d) => d.dedupeKey)).size).toBe(2);
+
+    // Crash-retry of the same occurrence: nothing re-sends.
+    await dispatcher.dispatch(req);
+    expect(pushSent).toHaveLength(2);
+  });
+
+  test("household broadcast pushes every member's devices and skips members without one", async () => {
+    if (!available) return;
+    const f = await fixture({ sms: false, push: true, memberCount: 2 });
+    await registerDevice(f.members[0]!.id);
+    // Member 2 never registered a phone.
+    const { apns, pushSent } = await fakeApns();
+    const dispatcher = new NotificationDispatcher(db, { telnyx: null, apns });
+
+    const reminderId = await makeReminder(f.household.id, null);
+    await dispatcher.dispatch({
+      householdId: f.household.id,
+      kind: "reminder",
+      sourceId: reminderId,
+      occurrenceKey: new Date().toISOString(),
+      target: { memberId: null, conversationId: null },
+      text: "family dinner",
+    });
+
+    expect(pushSent).toHaveLength(1);
+    const audit = await db.select().from(deliveries).where(eq(deliveries.reminderId, reminderId));
+    const skipped = audit.filter((d) => d.status === "skipped");
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.error).toContain("no registered devices");
+  });
+
+  test("a permanently dead token fails the delivery and deactivates the device", async () => {
+    if (!available) return;
+    const f = await fixture({ sms: false, push: true });
+    const device = await registerDevice(f.members[0]!.id);
+    const { apns } = await fakeApns(() => ({
+      status: 410,
+      body: JSON.stringify({ reason: "Unregistered" }),
+    }));
+    const dispatcher = new NotificationDispatcher(db, { telnyx: null, apns });
+
+    const reminderId = await makeReminder(f.household.id, f.members[0]!.id);
+    await dispatcher.dispatch({
+      householdId: f.household.id,
+      kind: "reminder",
+      sourceId: reminderId,
+      occurrenceKey: new Date().toISOString(),
+      target: { memberId: f.members[0]!.id, conversationId: null },
+      text: "going nowhere",
+    });
+
+    const audit = await db.select().from(deliveries).where(eq(deliveries.reminderId, reminderId));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.status).toBe("failed");
+    expect(audit[0]!.error).toBe("Unregistered");
+    const [row] = await db.select().from(pushDevices).where(eq(pushDevices.id, device.id));
+    expect(row!.active).toBe(false);
+  });
+
+  test("push enabled without APNs configured records explicit skips", async () => {
+    if (!available) return;
+    const f = await fixture({ sms: false, push: true });
+    await registerDevice(f.members[0]!.id);
+    const dispatcher = new NotificationDispatcher(db, { telnyx: null, apns: null });
+
+    const reminderId = await makeReminder(f.household.id, f.members[0]!.id);
+    await dispatcher.dispatch({
+      householdId: f.household.id,
+      kind: "reminder",
+      sourceId: reminderId,
+      occurrenceKey: new Date().toISOString(),
+      target: { memberId: f.members[0]!.id, conversationId: null },
+      text: "no apns",
+    });
+    const audit = await db.select().from(deliveries).where(eq(deliveries.reminderId, reminderId));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.status).toBe("skipped");
+    expect(audit[0]!.error).toContain("APNs");
+  });
+
+  test("push channel disabled means no push deliveries at all", async () => {
+    if (!available) return;
+    const f = await fixture({ sms: false, push: false });
+    await registerDevice(f.members[0]!.id);
+    const { apns, pushSent } = await fakeApns();
+    const dispatcher = new NotificationDispatcher(db, { telnyx: null, apns });
+
+    const reminderId = await makeReminder(f.household.id, f.members[0]!.id);
+    await dispatcher.dispatch({
+      householdId: f.household.id,
+      kind: "reminder",
+      sourceId: reminderId,
+      occurrenceKey: new Date().toISOString(),
+      target: { memberId: f.members[0]!.id, conversationId: null },
+      text: "quiet",
+    });
+    expect(pushSent).toHaveLength(0);
+    const audit = await db.select().from(deliveries).where(eq(deliveries.reminderId, reminderId));
+    expect(audit).toHaveLength(0);
+  });
+
+  test("task reminders deep-link to the task; bare reminders to themselves", async () => {
+    if (!available) return;
+    const f = await fixture({ sms: false, push: true });
+    await registerDevice(f.members[0]!.id);
+    const { apns, pushSent } = await fakeApns();
+    const dispatcher = new NotificationDispatcher(db, { telnyx: null, apns });
+
+    const reminderId = await makeReminder(f.household.id, f.members[0]!.id);
+    const [reminderRow] = await db.select().from(reminders).where(eq(reminders.id, reminderId));
+    await dispatcher.dispatch({
+      householdId: f.household.id,
+      kind: "reminder",
+      sourceId: reminderId,
+      taskId: reminderRow!.taskId,
+      occurrenceKey: new Date().toISOString(),
+      target: { memberId: f.members[0]!.id, conversationId: null },
+      text: "still open",
+    });
+    const payload = JSON.parse(pushSent[0]!.body) as { type?: string; id?: string };
+    expect(payload.type).toBe("task");
+    expect(payload.id).toBe(reminderRow!.taskId!);
   });
 });

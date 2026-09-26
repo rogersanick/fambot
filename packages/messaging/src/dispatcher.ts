@@ -9,8 +9,10 @@ import {
   members,
   messages,
   outboxMessages,
+  pushDevices,
 } from "@fambot/database";
 import { TelnyxSmsChannel, getOrCreateSmsConversation } from "./telnyx";
+import type { ApnsClient } from "./apns";
 
 export type NotificationRequest = {
   householdId: string;
@@ -28,7 +30,7 @@ export type NotificationRequest = {
 
 export type DispatchOutcome = {
   /** Per-recipient delivery rows created in this dispatch (deduped rows excluded). */
-  results: Array<{ channel: "sms" | "imessage"; status: string; recipient: string | null }>;
+  results: Array<{ channel: "sms" | "imessage" | "push"; status: string; recipient: string | null }>;
   /**
    * SMS conversation of the targeted member, when one was used. Reminders
    * about a task store this so a bare SMS "done" resolves to the right task.
@@ -51,6 +53,8 @@ export class NotificationDispatcher {
     private db: Db,
     private opts: {
       telnyx: TelnyxSmsChannel | null;
+      /** APNs client for the native-app push channel; null when unconfigured. */
+      apns?: ApnsClient | null;
       /** Wakes the bridge websocket flusher after enqueueing iMessage outbox rows. */
       notifyImsgOutbox?: () => void;
     }
@@ -63,10 +67,12 @@ export class NotificationDispatcher {
       .where(eq(householdNotificationChannels.householdId, req.householdId));
     const sms = channels.find((c) => c.channel === "sms");
     const imsg = channels.find((c) => c.channel === "imessage");
+    const push = channels.find((c) => c.channel === "push");
 
     const outcome: DispatchOutcome = { results: [], smsConversationId: null };
     if (sms?.enabled) await this.dispatchSms(req, outcome);
     if (imsg?.enabled) await this.dispatchImessage(req, imsg.conversationId, outcome);
+    if (push?.enabled) await this.dispatchPush(req, outcome);
     return outcome;
   }
 
@@ -156,6 +162,127 @@ export class NotificationDispatcher {
           })
           .where(eq(deliveries.id, deliveryId));
         outcome.results.push({ channel: "sms", status: "failed", recipient: r.phone });
+      }
+    }
+  }
+
+  // --- native app push (APNs) -------------------------------------------------
+
+  /**
+   * Fan out to every *active registered device* of each resolved recipient —
+   * two phones for one member alert twice, by design. The dedupe key is per
+   * device (installationId is stable across token rotations), so retries of
+   * the same occurrence stay at-most-once per phone.
+   */
+  private async dispatchPush(req: NotificationRequest, outcome: DispatchOutcome) {
+    const recipients = await this.resolveRecipients(req);
+    if (recipients.length === 0) return;
+
+    const devices = await this.db
+      .select()
+      .from(pushDevices)
+      .where(
+        and(
+          inArray(
+            pushDevices.memberId,
+            recipients.map((r) => r.memberId)
+          ),
+          eq(pushDevices.active, true)
+        )
+      );
+    const devicesByMember = new Map<string, typeof devices>();
+    for (const device of devices) {
+      const list = devicesByMember.get(device.memberId) ?? [];
+      list.push(device);
+      devicesByMember.set(device.memberId, list);
+    }
+
+    const aboutTask = Boolean(req.taskId);
+    const data: Record<string, string> = aboutTask
+      ? { type: "task", id: req.taskId! }
+      : { type: "reminder", id: req.sourceId };
+
+    for (const r of recipients) {
+      const memberDevices = devicesByMember.get(r.memberId) ?? [];
+
+      if (memberDevices.length === 0) {
+        const inserted = await this.insertDelivery(req, {
+          channel: "push",
+          dedupeKey: `${req.kind}:${req.sourceId}:${req.occurrenceKey}:push:${r.memberId}`,
+          memberId: r.memberId,
+          status: "skipped",
+          error: "member has no registered devices",
+        });
+        if (inserted) outcome.results.push({ channel: "push", status: "skipped", recipient: null });
+        continue;
+      }
+
+      for (const device of memberDevices) {
+        const dedupeKey = `${req.kind}:${req.sourceId}:${req.occurrenceKey}:push:${r.memberId}:${device.installationId}`;
+
+        if (!this.opts.apns) {
+          const inserted = await this.insertDelivery(req, {
+            channel: "push",
+            dedupeKey,
+            memberId: r.memberId,
+            recipientAddress: device.token,
+            status: "skipped",
+            error: "APNs is not configured on the server",
+          });
+          if (inserted) outcome.results.push({ channel: "push", status: "skipped", recipient: null });
+          continue;
+        }
+
+        const deliveryId = await this.insertDelivery(req, {
+          channel: "push",
+          dedupeKey,
+          memberId: r.memberId,
+          recipientAddress: device.token,
+          status: "pending",
+        });
+        if (!deliveryId) continue; // occurrence already dispatched to this device
+
+        try {
+          const result = await this.opts.apns.send({
+            token: device.token,
+            environment: device.environment,
+            title: "Fambot",
+            body: req.text,
+            data,
+          });
+          if (result.ok) {
+            await this.db
+              .update(deliveries)
+              .set({ status: "queued", providerMessageId: result.apnsId || null, attemptCount: 1 })
+              .where(eq(deliveries.id, deliveryId));
+            outcome.results.push({ channel: "push", status: "queued", recipient: device.token });
+          } else {
+            if (result.tokenInvalid) {
+              // APNs says this token is permanently dead; stop trying it.
+              await this.db
+                .update(pushDevices)
+                .set({ active: false, updatedAt: new Date() })
+                .where(eq(pushDevices.id, device.id));
+            }
+            await this.db
+              .update(deliveries)
+              .set({ status: "failed", attemptCount: 1, error: result.reason })
+              .where(eq(deliveries.id, deliveryId));
+            outcome.results.push({ channel: "push", status: "failed", recipient: device.token });
+          }
+        } catch (err) {
+          // Network-level failure: recorded, never blindly retried (no
+          // idempotency key on APNs sends).
+          await this.db
+            .update(deliveries)
+            .set({
+              status: "failed",
+              attemptCount: 1,
+              error: err instanceof Error ? err.message : String(err),
+            })
+            .where(eq(deliveries.id, deliveryId));
+          outcome.results.push({ channel: "push", status: "failed", recipient: device.token });
+        }
       }
     }
   }
@@ -283,7 +410,7 @@ export class NotificationDispatcher {
   private async insertDelivery(
     req: NotificationRequest,
     row: {
-      channel: "sms" | "imessage";
+      channel: "sms" | "imessage" | "push";
       dedupeKey: string;
       memberId?: string | null;
       conversationId?: string | null;

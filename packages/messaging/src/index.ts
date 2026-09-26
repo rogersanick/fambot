@@ -124,3 +124,11 @@ export {
   type NotificationRequest,
   type DispatchOutcome,
 } from "./dispatcher";
+export {
+  ApnsClient,
+  normalizeApnsPrivateKey,
+  type ApnsConfig,
+  type ApnsEnvironment,
+  type ApnsSendResult,
+  type ApnsTransport,
+} from "./apns";
